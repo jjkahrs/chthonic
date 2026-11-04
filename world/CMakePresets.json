@@ -1,0 +1,39 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+    },
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "inherits": "base",
+      "environment": { "VCPKG_VISUAL_STUDIO_PATH": "C:/Program Files/Microsoft Visual Studio/2022/Community" },
+      "cacheVariables": { "VCPKG_TARGET_TRIPLET": "x64-windows-static", "CMAKE_CXX_COMPILER": "cl", "CMAKE_C_COMPILER": "cl" }
+    },
+    { "name": "debug", "inherits": "windows-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } },
+    { "name": "release", "inherits": "windows-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } },
+    {
+      "name": "linux-release",
+      "inherits": "base",
+      "cacheVariables": { "VCPKG_TARGET_TRIPLET": "x64-linux-release", "VCPKG_HOST_TRIPLET": "x64-linux-release", "CMAKE_BUILD_TYPE": "Release" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "linux-release", "configurePreset": "linux-release" }
+  ],
+  "testPresets": [
+    { "name": "no-perf", "hidden": true, "output": { "outputOnFailure": true }, "filter": { "exclude": { "label": "perf" } } },
+    { "name": "debug", "inherits": "no-perf", "configurePreset": "debug" },
+    { "name": "release", "inherits": "no-perf", "configurePreset": "release" },
+    { "name": "linux-release", "inherits": "no-perf", "configurePreset": "linux-release" },
+    { "name": "perf", "configurePreset": "release", "output": { "outputOnFailure": true }, "filter": { "include": { "label": "perf" } } },
+    { "name": "perf-linux", "configurePreset": "linux-release", "output": { "outputOnFailure": true }, "filter": { "include": { "label": "perf" } } }
+  ]
+}

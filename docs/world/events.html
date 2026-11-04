@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Events - Chthonic World Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html" class="active">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="events">Events</h1>
+<p>Each <a href="maps.html#map-contexts">map context</a> has its own event bus, with the same API and rules as the client's, and so
+does the realm context. Systems use their map's to talk to each other, and server C++ can publish and subscribe through
+<code>World::bus(map)</code> (<code>World::bus()</code>: <code>START_MAP</code>'s) and <code>World::realm_bus()</code>. Events never reach clients on their own:
+only the three send functions put anything on the network.</p>
+<ul>
+<li><strong>Between maps:</strong> <code>chthonic.publish</code> reaches only its own map's subscribers. <code>chthonic.world.post(target, event, data)</code>
+  (<a href="lua.html#post">Lua</a>) reaches another map's bus, the realm's (<code>"realm"</code>) or every running context's (<code>"all"</code>): it is
+  published there at the end of the tick and delivered at the next tick's drain, in post order, with the payload
+  <code>{from = &lt;map id or "realm"&gt;, data}</code>. The game machines' <code>fsm.changed</code> and a portal's <code>area.leave</code> / <code>area.enter</code>
+  go on the buses of the maps concerned (<a href="maps.html#map-contexts">Map contexts</a>).</li>
+<li><strong>Delivery:</strong> <code>chthonic.publish</code> only queues. The queue is drained once per tick, right after every system's <code>update</code>
+  (step 6 below). Events are delivered in publish order, and each event's subscribers run in subscription order, C++
+  and Lua alike. Events published during the drain (by a subscriber), or from <code>init</code>, <code>onEnter</code> or <code>onLeave</code>, wait for
+  the next tick's drain. A graceful shutdown drops the queue.</li>
+<li><strong>Payloads:</strong> plain data. That is <code>nil</code>, booleans, finite numbers, strings, and tables whose keys are exactly 1..n
+  (arrays) or all strings (objects), nested at most 32 deep. Functions, userdata, threads, cycles, mixed keys, NaN and
+  infinities raise an error at the call (<code>chthonic.publish: payload.x must be a finite number</code>), and nothing is queued.
+  Every subscriber gets its own copy.</li>
+<li><strong>Names:</strong> non-empty strings. Anything else raises <code>&lt;function&gt;: event name must be a non-empty string, got &lt;value&gt;</code>.</li>
+<li><strong>Subscriptions belong to the calling system.</strong> When that system is disabled by any error, all of its subscriptions
+  are removed. A failing subscriber is logged as <code>Lua system disabled</code> (callback <code>event '&lt;name&gt;'</code>, with <code>path:line</code>),
+  and the event's other subscribers still run.</li>
+<li><strong>Client events:</strong> <code>chthonic.sendTo</code>, <code>chthonic.sendNearby</code> and <code>chthonic.broadcast</code> take the same names and payloads. Each
+  recipient gets a <code>ServerEvent</code> (<a href="protocol.html#server-events">protocol</a>), and the client publishes it on the
+  client's bus as <code>server.&lt;name&gt;</code>.<ul>
+<li><strong>When:</strong> sends are queued and go out in call order after component replication (step 8), so a client already has
+  the <code>Spawn</code> and the latest component values. Sends from <code>onLeave</code> go out at the despawn, before that character's
+  <code>Despawn</code>; sends from <code>onEnter</code> go out on the next tick.</li>
+<li><strong>Targets:</strong> a bad id (not a whole number from 0 to 2^32-1) raises <code>chthonic.sendTo: invalid entity id &lt;value&gt;</code>. A
+  valid id whose character or NPC is not in the world when the events go out (it left meanwhile) sends nothing, and
+  so does one on another map: <code>chthonic.sendTo</code>, <code>sendNearby</code> and <code>reply</code> reach the sender's map only. <code>chthonic.broadcast</code>
+  reaches every map: its own map's players in call order, the other maps' at the end of the tick.</li>
+<li><strong>Size:</strong> an event whose frame would pass 65535 bytes raises <code>chthonic.sendTo: event "&lt;name&gt;" is too large to send</code> at
+  the call.</li>
+</ul>
+</li>
+</ul>
+<h2 id="interactables">Interactables</h2>
+<p>An interactable map object (<a href="maps.html#objects">Maps, Objects</a>) names the event its activation publishes. When a
+player's <code>Interact</code> (<a href="protocol.html#interact">protocol</a>) passes the server's checks (an interactable of the player's
+map, the player within its range), the server publishes that event on this bus, from C++, in the tick after the
+message arrived; the drain after that tick's Lua <code>update</code> delivers it:</p>
+<pre><code class="language-lua">-- maps/meadow/.server/interactables/0_0.json: {"id": 1, "event": "shrine.activated", "data": {"message": "..."}, ...}
+chthonic.subscribe("shrine.activated", function(e)
+    -- e.entity: the player's character; e.map: its map id; e.object: the interactable's id;
+    -- e.data: the entry's "data" object, or nil if it has none
+    chthonic.sendTo(e.entity, "shrine.blessing", {text = e.data and e.data.message or "The shrine hums."})
+end)
+</code></pre>
+<ul>
+<li><strong>One event per object,</strong> named in its file, so a game can give each shrine, lever or chest its own subscriber, or
+  share one name and tell them apart by <code>e.object</code>.</li>
+<li><strong>Trust:</strong> everything in the payload comes from the server: the map files and the player's checked position. The
+  client only chose the id.</li>
+<li><strong>State is the game's:</strong> the server keeps none (no cooldowns, no enabled flag, no "opened" door). A subscriber that
+  wants a cooldown keeps it in Lua; nothing is replicated unless the subscriber sends it.</li>
+<li><strong>Rejections</strong> publish nothing and send nothing; they are logged at debug level (<code>interact rejected</code>).</li>
+<li><strong>Sample:</strong> <code>world/lua/systems/test_hooks.lua</code> (the hills' Test Shrine answers <code>test.shrine</code>, for
+  integration scenario 25).</li>
+</ul>
+<p><strong>Client events cost bandwidth.</strong> Each send is one message per recipient, and nothing rate-limits them: only the
+existing 1 MiB per-session send-buffer cap stops a flood, by disconnecting the client. <code>broadcast</code> reaches every
+player, so one call per player costs N² messages in a zone of N. <code>sendNearby</code> in a crowd costs about the same. Send on
+game events (a login, a kill, a quest step), never every tick.</p>
+</main>
+</div>
+</body>
+</html>

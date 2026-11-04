@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chthonic Map Bake</title>
+<link rel="stylesheet" href="../../../../docs/style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../../../../docs/index.html">Chthonic Docs</a><nav><a href="../../../../docs/auth/index.html">Auth Server</a><a href="../../../../docs/world/index.html">World Server</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Map Bake</h2><ul><li><a href="index.html" class="active">Map Bake</a></li></ul></nav>
+<main>
+<h1 id="map-bake">Map Bake</h1>
+<p>The world server's offline navmesh baker and map linter (<code>world/tools/mapbake/</code>). The server
+loads its output as described in <a href="../../../../docs/world/maps.html#navmesh">World Server, Navmesh</a>.</p>
+<p><strong>Baking:</strong> <code>chthonic_mapbake &lt;mapDir&gt; [--out &lt;dir&gt;]</code> (built with the server, on Windows and in the image) bakes one
+  Recast tile per declared tile into <code>&lt;mapDir&gt;/.server/nav/&lt;tx&gt;_&lt;tz&gt;.navtile</code> (or <code>--out</code>). Run it after editing a
+  map's heights, then commit the navtiles; the server needs no tool at run time.</p>
+<pre><code>build/debug/chthonic_mapbake.exe maps/hills
+# 0_0.navtile: 40 polys, 27452 bytes, 0.97 s   (debug build; one line per tile)
+# 4 navtile(s) -&gt; maps/hills/.server/nav
+docker compose run --rm -T --entrypoint ./chthonic_mapbake bot /app/maps/hills --out /tmp/nav   # in the image
+</code></pre>
+<ul>
+<li><strong>Input:</strong> each tile's ground triangles (<code>map::for_each_triangle</code>, the triangles the client renders and Jolt
+  collides with) plus a border from its neighbours on the map, so paths cross tile edges. A tile without heights is
+  flat.</li>
+<li><strong>Zone objects:</strong> every obstacle and interactable in <code>objects/&lt;tx&gt;_&lt;tz&gt;.json</code> (the tile's and its neighbours',
+  for the border) is cut out of the walkable area by its <code>shape</code>: a box's footprint turned by its yaw
+  (<code>rcMarkConvexPolyArea</code>) or a cylinder (<code>rcMarkCylinderArea</code>), the whole column under it. The cut happens before the
+  <code>agentRadius</code> erosion, so agents keep that clearance round every object. Visuals are ignored
+  (<a href="../../../../docs/world/maps.html#objects">World Server, Maps, Objects</a>). Re-bake after moving a blocking
+  object.</li>
+<li><strong>Params:</strong> the manifest's <code>nav</code> (defaults <code>agentRadius</code> 0.4, <code>agentHeight</code> 1.8, <code>maxClimb</code> 0.5, <code>maxSlopeDeg</code> 45,
+  <code>cellSize</code> 0.5; cell height is <code>cellSize / 2</code>). <code>maxSlopeDeg</code> is also the client's character max slope on terrain,
+  so the bake and Jolt agree on what is walkable. <code>cellSize</code> must divide 256, and <code>tan(maxSlopeDeg) * cellSize</code>
+  should not exceed <code>maxClimb</code>, or walkable slopes come apart.</li>
+<li><strong>Lint first:</strong> height seams (a tile's edge samples must equal its neighbour's), every spawn file
+  (<code>map::parse_spawns</code>, tile on the map, ids unique), every objects file (<code>map::parse_objects</code>: a bad file, an unknown
+  <code>type</code>, a blocking object without a <code>shape</code> or any other bad entry, tile on the map, interactable ids unique) and every
+  <code>.server/interactables</code> file (<code>map::parse_interactables</code>, as the server loads them). Any error is printed (<code>seam 0_0 | 1_0: 257 samples differ,
+  worst 1.53 m at z 0</code>) and the tool exits 1 having written nothing. Usage errors exit 2.</li>
+<li><strong>Cost:</strong> with <code>cellSize</code> 0.5, about 1 s and 30-45 KB per hills tile (40-90 polygons).</li>
+</ul>
+
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setup and commands - Chthonic Admin App</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="../world/index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Admin App</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html" class="active">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="permissions.html">Permissions</a></li><li><a href="endpoints.html">Endpoints</a></li><li><a href="security.html">Security behaviour</a></li></ul></nav>
+<main>
+<h1 id="setup">Setup</h1>
+<p>The admin app runs in the world compose stack (<code>world/docker-compose.yml</code>) next to auth, world, chat, MySQL and Mailpit.</p>
+<pre><code class="language-sh">cd world
+cp .env.example .env        # first time; otherwise add the admin variables from .env.example to your .env
+# set ADMIN_DB_PASSWORD, ADMIN_WORLD_DB_PASSWORD, WORLD_ADMIN_SECRET, SEED_ADMIN_EMAIL, SEED_ADMIN_PASSWORD
+docker compose up -d --build
+curl -s localhost:3200/health   # {&quot;status&quot;:&quot;ok&quot;,&quot;db&quot;:&quot;ok&quot;}
+</code></pre>
+<p>Open <a href="http://localhost:3200">http://localhost:3200</a> and sign in with <code>SEED_ADMIN_EMAIL</code> / <code>SEED_ADMIN_PASSWORD</code> (auth creates that admin, pre-verified, on start). Create GM accounts on the Accounts page.</p>
+<table>
+<thead>
+<tr><th>Service</th><th>Port</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>admin</code></td><td><code>127.0.0.1:${ADMIN_HOST_PORT:-3200}</code></td><td>API + SPA. Runs its migrations (<code>chthonic_admin</code>) on start. Published on the host loopback only. <code>COOKIE_SECURE=false</code> because the stack is plain http</td></tr>
+<tr><td><code>admin-db-init</code></td><td>-</td><td>Runs on every <code>up</code>, after world and auth are healthy (<code>docker/admin-db-init.sh</code>, idempotent): creates <code>chthonic_admin</code> and its user, the <code>chthonic_world_admin</code> user with <code>SELECT, UPDATE</code> on <code>chthonic_world.characters</code> only, and seeds realm <code>REALM_ID</code> in auth with <code>admin_host=world</code>, <code>admin_port=7780</code> (kept if already set)</td></tr>
+<tr><td><code>world</code></td><td>7780 (compose network only)</td><td>The admin port; on when <code>WORLD_ADMIN_SECRET</code> is set</td></tr>
+</tbody>
+</table>
+<p>The admin service reads the world's dev certificate from the <code>world-certs</code> volume (read-only) as the CA for the admin port.</p>
+<h2 id="first-admin-sign-in">GMs need one admin sign-in first</h2>
+<p>GMs cannot read realms from auth (realm admin endpoints are admin-only), so the admin service keeps a copy of each realm's admin host/port in <code>chthonic_admin.realm_endpoints</code>. It is refreshed whenever an admin signs in, opens the Realms or Online page, or edits a realm. Until an admin has done that once after a realm was added or its admin endpoint changed, GMs get <code>503 realm_unreachable</code> for that realm's online list, kicks and character writes.</p>
+<h2 id="running-on-the-host">Running on the host</h2>
+<p>For development, run the API and the Vite dev server on the host against the compose stack's MySQL and auth:</p>
+<pre><code class="language-sh">cd admin
+npm ci
+cp .env.example .env     # DB_PORT=3307 (compose MySQL), AUTH_URL=http://127.0.0.1:3100,
+                         # WORLD_ADMIN_CA_FILE = a copy of the world's server.crt
+npm run dev:api          # API on :3200 (tsx, reads .env)
+npm run dev              # SPA on http://localhost:5173, /api proxied to :3200 (ADMIN_API_URL overrides)
+</code></pre>
+<p>The world admin port is not published by compose, so from the host online/kick only work against a world server running on the host.</p>
+<h1 id="commands">Commands</h1>
+<p>Run in <code>admin</code>.</p>
+<table>
+<thead>
+<tr><th>Command</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>npm run build</code></td><td>Compiles the API to <code>dist/</code> and builds the SPA to <code>web/dist/</code></td></tr>
+<tr><td><code>npm start</code></td><td>Runs the compiled API, which serves <code>web/dist</code> with an SPA fallback</td></tr>
+<tr><td><code>npm run dev</code></td><td>Vite dev server for the SPA, proxying <code>/api</code> to the API</td></tr>
+<tr><td><code>npm run dev:api</code></td><td>The API with tsx, reading <code>.env</code></td></tr>
+<tr><td><code>npm run migrate</code></td><td>Applies <code>migrations/*.sql</code> to <code>chthonic_admin</code> (the server also does this on start)</td></tr>
+<tr><td><code>npm run typecheck</code></td><td>TypeScript for the API, tests, scripts and the SPA</td></tr>
+<tr><td><code>npm run lint</code></td><td>ESLint</td></tr>
+<tr><td><code>npm test</code></td><td>Vitest + supertest against real MySQL test databases, the real auth app in-process (<code>../auth</code>) and a fake world admin server</td></tr>
+<tr><td><code>npm run screenshots</code></td><td>Headless Playwright: PNGs of every page as admin and as gm in <code>screenshots/</code>. Needs the compose stack; (re)creates <code>gm-screenshots@chthonic.local</code>, runs one idle bot and stops/starts the world container for the unreachable shots. First time: <code>npx playwright install chromium-headless-shell</code></td></tr>
+</tbody>
+</table>
+<h2 id="tests">Tests</h2>
+<p><code>npm test</code> uses <code>TEST_MYSQL_ROOT_PASSWORD</code> to create <code>TEST_ADMIN_DB_NAME</code> / <code>TEST_WORLD_DB_NAME</code> and the two least-privilege users on first run, and starts auth in-process with <code>../auth/.env</code> on auth's test database. The MySQL of the auth compose stack (port 3306) works.</p>
+</main>
+</div>
+</body>
+</html>

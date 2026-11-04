@@ -1,0 +1,10 @@
+# Context the repository root: only what chat/Dockerfile copies.
+*
+!world/vcpkg.json
+!world/service_core.cmake
+!world/protocol/
+!world/server/
+!chat/
+chat/build/
+chat/certs/
+chat/.env

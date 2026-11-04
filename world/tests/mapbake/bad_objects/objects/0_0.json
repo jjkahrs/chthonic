@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "objects": [
+    {"type": "visual", "prefab": "prefabs/grass.prefab", "pos": [20, 0, 20]},
+    {"type": "statue", "prefab": "prefabs/statue.prefab", "pos": [30, 0, 30]},
+    {"type": "obstacle", "prefab": "prefabs/rock.prefab", "pos": [40, 0, 40]}
+  ]
+}

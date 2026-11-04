@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Permissions - Chthonic Admin App</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="../world/index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Admin App</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="permissions.html" class="active">Permissions</a></li><li><a href="endpoints.html">Endpoints</a></li><li><a href="security.html">Security behaviour</a></li></ul></nav>
+<main>
+<h1 id="permissions">Permissions</h1>
+<p>Three roles, taken from auth's access token: <code>player</code>, <code>gm</code>, <code>admin</code>. Players cannot sign in. The admin service gates every route by role so the UI gets clean <code>403 forbidden</code> answers, and auth re-checks account and realm calls with the caller's own token. The SPA hides what a role cannot do, but it is not the security boundary.</p>
+<table>
+<thead>
+<tr><th>Action</th><th>admin</th><th>gm</th></tr>
+</thead>
+<tbody>
+<tr><td>Sign in to the admin app</td><td>yes</td><td>yes</td></tr>
+<tr><td>List / search accounts</td><td>yes</td><td>yes</td></tr>
+<tr><td>View account detail</td><td>yes</td><td><code>player</code> accounts only</td></tr>
+<tr><td>Ban / unban</td><td>yes (not self)</td><td><code>player</code> accounts only</td></tr>
+<tr><td>Create account, delete account, set role</td><td>yes (not self for delete and role)</td><td>no</td></tr>
+<tr><td>Verify email, send password reset, unlock, revoke sessions</td><td>yes</td><td>no</td></tr>
+<tr><td>List / view characters</td><td>yes</td><td>yes</td></tr>
+<tr><td>Rename, move, edit components/options, delete, restore characters</td><td>yes</td><td>yes</td></tr>
+<tr><td><code>force</code> a character write when the realm is unreachable</td><td>yes (audited <code>forced=true</code>)</td><td>no (403)</td></tr>
+<tr><td>Online list, kick</td><td>yes</td><td>yes</td></tr>
+<tr><td>Instance list</td><td>yes</td><td>yes</td></tr>
+<tr><td>Realms: list, create, edit, delete, see admin host/port</td><td>yes</td><td>no (GMs only get realm id, name and reachability)</td></tr>
+<tr><td>Audit log</td><td>yes</td><td>no</td></tr>
+</tbody>
+</table>
+<h2 id="side-effects">Side effects</h2>
+<ul>
+<li><strong>Ban</strong> and <strong>role change</strong> kick the account's online characters on every reachable realm. Kick failures don't block the change; they are returned (<code>kicks.failures</code>) and audited.</li>
+<li><strong>Delete account</strong> kicks everywhere, deletes the account in auth (bans and tokens cascade), then soft-deletes all its characters (<code>deleted_at</code>).</li>
+</ul>
+</main>
+</div>
+</body>
+</html>

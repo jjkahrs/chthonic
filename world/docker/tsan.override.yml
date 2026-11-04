@@ -1,0 +1,24 @@
+# ThreadSanitizer run of the world server (testing only; docs/world/tests.html#tsan). The Dockerfile's tsan
+# stage: chthonic_world and world_self_check built with -fsanitize=thread, tagged chthonic-world:tsan (chthonic-world:dev, which the
+# bot also runs, is untouched). Reports go to files in the tsan-reports volume (kept when world is recreated):
+#   docker compose run --rm --no-deps --entrypoint sh world -c 'cat /app/tsan/* 2>/dev/null' | grep -c "WARNING: ThreadSanitizer"
+#   docker compose -f docker-compose.yml -f docker/tsan.override.yml up -d --build world
+# The self-check needs the source tree (its Lua checks copy lua/), so it runs in the build stage:
+#   docker build --target build-tsan -t chthonic-world:tsan-build .
+#   docker run --rm --security-opt seccomp=unconfined -w /src chthonic-world:tsan-build setarch x86_64 -R ./build/linux-release/world_self_check
+# Back to the default: docker compose up -d --force-recreate world
+services:
+  world:
+    build:
+      context: .
+      target: tsan
+    image: chthonic-world:tsan
+    security_opt:
+      - seccomp:unconfined # setarch -R (the image's entrypoint): TSan fails on a randomized layout
+    environment:
+      TSAN_OPTIONS: halt_on_error=0 second_deadlock_stack=1 log_path=/app/tsan/report
+    volumes:
+      - tsan-reports:/app/tsan
+
+volumes:
+  tsan-reports:

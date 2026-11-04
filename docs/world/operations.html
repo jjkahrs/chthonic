@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Operations - Chthonic World Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html" class="active">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="operations">Operations</h1>
+<ul>
+<li><strong>Logs:</strong> JSON lines on stdout: <code>ts</code> (UTC, <code>2026-10-15T12:34:56.789Z</code>), <code>level</code>, <code>msg</code>, then the fields.
+  <code>LOG_LEVEL</code> (<code>debug</code>, <code>info</code>, <code>warn</code>, <code>error</code>) drops lower levels before anything is queued.<ul>
+<li><strong>Asynchronous:</strong> the caller (the tick, the DB worker, Lua) only builds the line and queues it; a background thread (Quill) writes stdout.
+  <code>ts</code> is the time of the call, not of the write.</li>
+<li><strong>Never dropped:</strong> each thread's queue grows to 64 MiB; past that the caller blocks until the writer catches up.</li>
+<li><strong>Flushed on exit:</strong> everything queued is written when the process exits normally: after <code>shutdown complete</code>, after SIGINT/SIGTERM
+  (the graceful shutdown, then the normal exit), and after a fatal startup error (exit 1). The logger never handles SIGINT/SIGTERM itself; one
+  that arrives before the server is up kills the process with the default action, and lines still queued are lost.</li>
+<li><strong>warn and error flushed at once:</strong> the writer flushes stdout after each <code>warn</code> or <code>error</code> line, so one already written
+  survives a SIGKILL (a <code>docker stop</code> timeout, the OOM killer). <code>debug</code>/<code>info</code> lines are flushed when the writer is idle.</li>
+<li><strong>Crashes:</strong> SIGSEGV, SIGABRT (<code>abort()</code>), SIGFPE and SIGILL (on Windows <code>abort()</code> and any unhandled SEH exception, such as
+  an access violation, on any thread) write the queued lines, then <code>Received signal</code>/<code>Received exception</code> and
+  <code>Program terminated unexpectedly</code> lines, before the process dies.</li>
+</ul>
+</li>
+<li id="tick-stats"><strong>Tick stats:</strong> every <code>TICK_STATS_INTERVAL_SECONDS</code>, the server logs a <code>tick stats</code> line, and a <code>tick stats total</code> line on shutdown. They contain:<ul>
+<li><code>p50_ms</code>, <code>p99_ms</code> and <code>max_ms</code>: systems time per tick (the whole tick, workers and serial points included).</li>
+<li><code>lag_p99_ms</code> and <code>lag_max_ms</code>: how late the tick timer fired.</li>
+<li><code>map_threads</code>: <code>MAP_THREADS</code>. <code>contexts</code>: the map contexts updated in the last tick.</li>
+<li><code>ctx_p50_ms</code>, <code>ctx_p99_ms</code> and <code>ctx_max_ms</code>: one map context's update time in one tick (its two update steps), over every
+  context and tick of the window (<a href="maps.html#threading">Threading</a>). With <code>MAP_THREADS</code> &gt; 1 a tick takes at least its slowest
+  context, plus the serial points; with 1, about the sum of them.</li>
+<li><code>population</code> and <code>connections</code>.</li>
+<li><code>saves_ok</code>, <code>saves_failed_attempts</code> and <code>saves_pending</code>.</li>
+</ul>
+</li>
+<li id="net-stats"><strong>Net stats:</strong> with every <code>tick stats</code> line the server logs a <code>net stats</code> line, and a <code>net stats total</code> line on shutdown
+  (since the start). <code>net_threads</code> is <code>NET_THREADS</code>; <code>busy_pct</code> has one number per net thread: its CPU time (TLS, framing,
+  socket calls) over the wall time of the window, in %. A thread near 100 is the network limit: raise <code>NET_THREADS</code> if cores are free.
+  Connections are spread round-robin when they connect, so the numbers can drift apart; nothing rebalances them. Example:
+  <code>{"msg":"net stats","net_threads":4,"busy_pct":[12.5,11.9,13.1,12.2]}</code>.</li>
+<li id="map-threads"><strong>Choosing <code>MAP_THREADS</code>:</strong> keep 1 while <code>p99_ms</code> is well under the tick period (50 ms at
+  <code>TICK_HZ</code> 20) or nearly every player is on one map: a single map never splits across threads. Raise it when players spread over
+  several maps and <code>p99_ms</code> climbs: with <code>contexts</code> busy maps, about <code>min(contexts, cores - 2)</code> (the net threads, the DB
+  workers and the log writer need cores too). More threads than busy maps only wait. If <code>ctx_max_ms</code> is close to <code>p99_ms</code>, one map
+  is the bottleneck and more threads will not help; give that map a <a href="maps.html#layers"><code>layerCap</code></a> instead.
+  Its layers are contexts too, updated one after another at <code>MAP_THREADS=1</code>: set it to about the expected layer count
+  (2000 bots, <code>layerCap</code> 500, 4 layers: tick p99 about 33 ms at 1, about 12 ms at 4).</li>
+<li id="layer-logs"><strong>Layers</strong> (<a href="maps.html#layers">Maps, Layers</a>):<ul>
+<li><code>layer created</code> (info) <code>{map, name, instance, key: null}</code>: every live layer of the map was full, so an extra layer opened.</li>
+<li><code>layer destroyed</code> (info) <code>{map, instance, key: null, npcs}</code>: an extra layer was empty for the map's <code>emptyTimeoutSec</code>.</li>
+<li><code>no new layer: overfilling the fullest</code> (warn) <code>{map, instance, players, cap, reason}</code>: every layer was full and no
+  new one could be made (<code>reason</code>: <code>instance ids exhausted</code> or <code>entity ids low</code>); the player joined the fullest
+  layer anyway.</li>
+<li><code>saved layer not joinable; placing as a new arrival</code> (info) <code>{char, map, instance, reason}</code>: a login saved in a layer
+  that is full (<code>layer full</code>) or gone (<code>layer gone</code>: closed, or a previous run's).</li>
+<li><code>transfer refused: layer full or gone</code> (info) <code>{entity, map, layer}</code>: a <code>chthonic.transfer</code> with <code>layer =</code>.</li>
+</ul>
+  The number of live layers per map is in the admin port's instance list, or <code>layer created</code> minus <code>layer destroyed</code>
+  (<code>tests/load.sh</code> prints the peak).</li>
+</ul>
+</main>
+</div>
+</body>
+</html>

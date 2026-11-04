@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Endpoints - Chthonic Admin App</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="../world/index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Admin App</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="permissions.html">Permissions</a></li><li><a href="endpoints.html" class="active">Endpoints</a></li><li><a href="security.html">Security behaviour</a></li></ul></nav>
+<main>
+<h1 id="endpoints">Endpoints</h1>
+<p>JSON over HTTP under <code>/api</code>, same origin as the SPA. Authentication is by session cookie (see <a href="security.html">Security behaviour</a>); every non-GET needs the <code>X-CSRF-Token</code> header. Every mutating route writes one audit row. Roles: A = admin, G = gm.</p>
+<h2 id="session">Session</h2>
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>Roles</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/api/session</code></td><td>A, G</td><td><code>{id, email, role}</code>, or 401. Also hands out the CSRF cookie</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/session/login</code></td><td>anyone</td><td><code>{email, password}</code> → <code>{id, email, role}</code> and the session cookies; players get 403. Replaces the CSRF cookie</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/session/logout</code></td><td>anyone</td><td>Logs out in auth and clears the cookies → 204</td></tr>
+</tbody>
+</table>
+<h2 id="accounts">Accounts</h2>
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>Roles</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/api/accounts</code></td><td>A, G</td><td>Query <code>q</code> (email substring or id), <code>role</code>, <code>banned</code> / <code>verified</code> / <code>locked</code> (<code>true|false</code>), <code>limit</code> (≤100, default 50), <code>offset</code> → <code>{accounts, total, limit, offset}</code></td></tr>
+<tr><td><code>GET</code></td><td><code>/api/accounts/:id</code></td><td>A, G</td><td>Account + <code>bans[]</code> history</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/accounts</code></td><td>A</td><td><code>{email, password (10-128), role?}</code> → 201; created verified</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/api/accounts/:id</code></td><td>A</td><td>Kick, delete in auth, soft-delete characters → <code>{kicks, charactersDeleted}</code></td></tr>
+<tr><td><code>POST</code></td><td><code>/api/accounts/:id/ban</code></td><td>A, G</td><td><code>{reason (≤500), expiresAt?}</code> → 201 <code>{ban, kicks}</code></td></tr>
+<tr><td><code>DELETE</code></td><td><code>/api/accounts/:id/ban</code></td><td>A, G</td><td>Lift the active ban → 204</td></tr>
+<tr><td><code>PUT</code></td><td><code>/api/accounts/:id/role</code></td><td>A</td><td><code>{role}</code> → <code>{account, kicks}</code> (<code>kicks</code> is null when the role did not change)</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/accounts/:id/verify-email</code></td><td>A</td><td>→ 204</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/accounts/:id/password-reset</code></td><td>A</td><td>Sends auth's normal reset email → 204</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/accounts/:id/unlock</code></td><td>A</td><td>→ 204</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/accounts/:id/revoke-sessions</code></td><td>A</td><td>→ 204</td></tr>
+</tbody>
+</table>
+<p><code>kicks</code> is <code>{kicked, failures: [{realmId, code}]}</code>.</p>
+<h2 id="characters">Characters</h2>
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>Roles</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/api/characters</code></td><td>A, G</td><td>Query <code>realmId</code>, <code>accountId</code>, <code>name</code> (prefix), <code>includeDeleted</code>, <code>limit</code>, <code>offset</code> → <code>{characters, total, limit, offset}</code></td></tr>
+<tr><td><code>GET</code></td><td><code>/api/characters/:id</code></td><td>A, G</td><td>Summary + <code>position {x, y, z}</code>, <code>heading</code>, <code>components</code>, <code>options</code></td></tr>
+<tr><td><code>PUT</code></td><td><code>/api/characters/:id/name</code></td><td>A, G</td><td><code>{name, force?}</code>: 3-16 ASCII letters, unique per realm including deleted characters (409 <code>name_taken</code>)</td></tr>
+<tr><td><code>PUT</code></td><td><code>/api/characters/:id/position</code></td><td>A, G</td><td><code>{mapId, x, y, z, heading, force?}</code></td></tr>
+<tr><td><code>PUT</code></td><td><code>/api/characters/:id/components</code></td><td>A, G</td><td><code>{components, force?}</code>: a JSON object, ≤64 KiB</td></tr>
+<tr><td><code>PUT</code></td><td><code>/api/characters/:id/options</code></td><td>A, G</td><td><code>{options, force?}</code>: a JSON object, ≤64 KiB</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/api/characters/:id</code></td><td>A, G</td><td>Soft delete; body <code>{force?}</code></td></tr>
+<tr><td><code>POST</code></td><td><code>/api/characters/:id/restore</code></td><td>A, G</td><td>Clears <code>deleted_at</code>; body <code>{force?}</code></td></tr>
+</tbody>
+</table>
+<p>Every write answers the character after the change and goes through the <a href="security.html#online-guard">online guard</a>: online → 409 <code>character_online</code> (details <code>{realmId, accountId}</code>); realm unreachable → 503 <code>realm_unreachable</code> unless an admin sends <code>force: true</code>; a GM's <code>force</code> → 403.</p>
+<h2 id="realms">Realms, online, kick</h2>
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>Roles</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/api/realms</code></td><td>A, G</td><td><code>{realms}</code>: admins get auth's full view + <code>reachable</code>; GMs get <code>{id, name, reachable}</code> only</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/realms/:id</code></td><td>A</td><td>One realm</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/realms</code></td><td>A</td><td><code>{name, host, port, adminHost?, adminPort?, region, status?, sortOrder?}</code> → 201</td></tr>
+<tr><td><code>PUT</code></td><td><code>/api/realms/:id</code></td><td>A</td><td>Same body</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/api/realms/:id</code></td><td>A</td><td>→ 204</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/realms/:id/online</code></td><td>A, G</td><td><code>{online: [{accountId, characterId, characterName, mapId, sessionId, connectedAt}]}</code>; lobby sessions have <code>characterId</code> 0</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/realms/:id/instances</code></td><td>A, G</td><td><code>{instances: [{mapId, mapName, instanceId, key, players, npcs, createdAt, emptySince}]}</code>: the realm's live map contexts (<a href="../world/protocol.html#admin"><code>AdminInstancesReq</code></a>); <code>instanceId</code> 0 for a world map, <code>key</code> <code>''</code> when keyless, <code>emptySince</code> <code>null</code> unless an empty copy's timer runs. 503 <code>realm_unreachable</code> like online</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/realms/:id/kick</code></td><td>A, G</td><td><code>{accountId | characterId, reason (1-200)}</code> → <code>{kicked}</code></td></tr>
+</tbody>
+</table>
+<h2 id="audit">Audit</h2>
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>Roles</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/api/audit</code></td><td>A</td><td>Query <code>actorId</code>, <code>action</code>, <code>targetType</code>, <code>targetId</code>, <code>from</code>, <code>to</code> (ISO 8601), <code>limit</code>, <code>offset</code> → <code>{entries, total, limit, offset}</code>. Entry: <code>id, actorAccountId, actorEmail, actorRole, action, targetType, targetId, before, after, forced, result, createdAt</code>; <code>result</code> is <code>ok</code> or the error code</td></tr>
+</tbody>
+</table>
+<p>Also: <code>GET /health</code> → <code>{status, db}</code> (503 <code>db_unavailable</code>). Any other GET outside <code>/api</code> serves the SPA.</p>
+<h2 id="errors">Errors</h2>
+<p>Errors are <code>{"error": {"code", "message", "details"?}}</code>, as in auth. Auth's codes (for example <code>email_taken</code>, <code>account_not_found</code>, <code>invalid_credentials</code>, <code>rate_limited</code>) pass through unchanged.</p>
+<table>
+<thead>
+<tr><th>Status</th><th>Code</th><th>When</th></tr>
+</thead>
+<tbody>
+<tr><td>400</td><td><code>validation_error</code></td><td>Bad body, params or query; <code>details</code> lists the issues</td></tr>
+<tr><td>400</td><td><code>cannot_modify_self</code></td><td>Deleting, banning or changing the role of your own account</td></tr>
+<tr><td>401</td><td><code>unauthorized</code></td><td>No or invalid session</td></tr>
+<tr><td>403</td><td><code>forbidden</code></td><td>Role not allowed (includes a player signing in and a GM using <code>force</code>)</td></tr>
+<tr><td>403</td><td><code>csrf_invalid</code></td><td>Non-GET without a matching <code>X-CSRF-Token</code></td></tr>
+<tr><td>404</td><td><code>character_not_found</code>, <code>realm_not_found</code>, <code>not_found</code></td><td>Unknown character, realm or route</td></tr>
+<tr><td>409</td><td><code>character_online</code></td><td>Character write while the account is online on that realm</td></tr>
+<tr><td>409</td><td><code>name_taken</code></td><td>Rename to a name the realm already has (deleted characters included)</td></tr>
+<tr><td>413</td><td><code>payload_too_large</code></td><td>Body over 100 KB</td></tr>
+<tr><td>502</td><td><code>auth_unavailable</code></td><td>Auth did not answer</td></tr>
+<tr><td>503</td><td><code>realm_unreachable</code></td><td>The realm's admin port is not configured, down or timed out</td></tr>
+<tr><td>503</td><td><code>db_unavailable</code></td><td>MySQL down (<code>/health</code>)</td></tr>
+</tbody>
+</table>
+</main>
+</div>
+</body>
+</html>

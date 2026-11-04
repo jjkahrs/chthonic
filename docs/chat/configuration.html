@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Configuration - Chthonic Chat Service</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="../world/index.html">World Server</a><a href="index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Chat Service</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html" class="active">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="tests.html">Tests</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="configuration">Configuration</h1>
+<p>Every setting is an environment variable, checked at startup: a bad or missing one stops it with one line per problem. <code>chat/.env.example</code> has them all; the compose stack sets them itself (<a href="setup.html#compose">Setup</a>).</p>
+<table>
+<thead>
+<tr><th>Variable</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CHAT_HOST</code></td>
+<td><code>0.0.0.0</code></td>
+<td>Address both ports listen on</td>
+</tr>
+<tr>
+<td><code>CHAT_PORT</code></td>
+<td><code>7778</code></td>
+<td>Game clients</td>
+</tr>
+<tr>
+<td><code>CHAT_LINK_PORT</code></td>
+<td><code>7779</code></td>
+<td>World servers (internal link); must differ from <code>CHAT_PORT</code>. Keep it off the public network</td>
+</tr>
+<tr>
+<td><code>CHAT_LINK_SECRET</code></td>
+<td>(required)</td>
+<td>Shared with every world server (<code>CHAT_LINK_SECRET</code> there); at least 16 characters. Never logged</td>
+</tr>
+<tr>
+<td><code>CHAT_BIND_TIMEOUT_MS</code></td>
+<td><code>5000</code></td>
+<td>How long an authenticated client waits for its character's <code>CharOnline</code> before <code>Disconnect{no_character}</code></td>
+</tr>
+<tr>
+<td><code>MAX_CONNECTIONS</code></td>
+<td><code>5000</code></td>
+<td>Game client connections; more get <code>server_full</code></td>
+</tr>
+<tr>
+<td><code>MAX_FRAME_BYTES</code></td>
+<td><code>4096</code></td>
+<td>Largest frame a client may send</td>
+</tr>
+<tr>
+<td><code>HANDSHAKE_TIMEOUT_MS</code></td>
+<td><code>10000</code></td>
+<td>TLS + <code>Hello</code> + <code>Auth</code> (plus <code>CHAT_BIND_TIMEOUT_MS</code> for clients)</td>
+</tr>
+<tr>
+<td><code>IDLE_TIMEOUT_MS</code> / <code>PING_INTERVAL_MS</code></td>
+<td><code>60000</code> / <code>20000</code></td>
+<td>Heartbeat, both ports</td>
+</tr>
+<tr>
+<td><code>MSG_RATE_PER_SEC</code> / <code>MSG_BURST</code></td>
+<td><code>20</code> / <code>40</code></td>
+<td>Per-connection message rate for clients (excess dropped, sustained excess disconnects); the links are not limited</td>
+</tr>
+<tr>
+<td><code>TLS_CERT_FILE</code> / <code>TLS_KEY_FILE</code></td>
+<td>(empty)</td>
+<td>Certificate and key; set both or neither. Compose: the world server's dev certificate</td>
+</tr>
+<tr>
+<td><code>TLS_DEV_CERT_DIR</code></td>
+<td><code>./certs</code></td>
+<td>Without the two above: a self-signed dev certificate is made here</td>
+</tr>
+<tr>
+<td><code>AUTH_JWKS_URL</code></td>
+<td>(required)</td>
+<td>The auth service's JWKS, to verify access tokens</td>
+</tr>
+<tr>
+<td><code>JWT_ISSUER</code> / <code>JWT_AUDIENCE</code></td>
+<td><code>chthonic-auth</code> / <code>chthonic</code></td>
+<td>Required <code>iss</code> / <code>aud</code></td>
+</tr>
+<tr>
+<td><code>JWT_CLOCK_SKEW_SECONDS</code></td>
+<td><code>5</code></td>
+<td>Leeway on <code>exp</code></td>
+</tr>
+<tr>
+<td><code>JWKS_REFRESH_SECONDS</code> / <code>JWKS_MIN_REFETCH_SECONDS</code> / <code>JWKS_TIMEOUT_MS</code></td>
+<td><code>300</code> / <code>10</code> / <code>3000</code></td>
+<td>JWKS cache, as the world server's</td>
+</tr>
+<tr>
+<td><code>DB_HOST</code> / <code>DB_PORT</code></td>
+<td>(required) / <code>3306</code></td>
+<td>MySQL for the mutes</td>
+</tr>
+<tr>
+<td><code>DB_USER</code> / <code>DB_PASSWORD</code> / <code>DB_NAME</code></td>
+<td>(required)</td>
+<td>Compose: <code>chthonic_chat</code> / <code>CHAT_DB_PASSWORD</code> / <code>chthonic_chat</code></td>
+</tr>
+<tr>
+<td><code>DB_CONNECT_TIMEOUT_SECONDS</code></td>
+<td><code>3</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>MIGRATIONS_DIR</code></td>
+<td><code>./migrations</code></td>
+<td>Applied at startup, once each (<code>schema_migrations</code>, named lock <code>chthonic_chat_migrate</code>)</td>
+</tr>
+<tr>
+<td><code>CHAT_CHANNELS</code></td>
+<td><code>General,Trade,LFG</code></td>
+<td>1 to 9 names of 1-16 letters or digits; numbered from 1 in this order (<code>/1</code>, <code>/2</code>, ...). Every client is put in the first on connect</td>
+</tr>
+<tr>
+<td><code>CHAT_MAX_BYTES</code></td>
+<td><code>256</code></td>
+<td>UTF-8 bytes per message (as the world server's say)</td>
+</tr>
+<tr>
+<td><code>CHAT_RATE_COUNT</code> / <code>CHAT_RATE_WINDOW_MS</code></td>
+<td><code>5</code> / <code>10000</code></td>
+<td>Messages per sender per sliding window (whispers, channel and zone lines together)</td>
+</tr>
+<tr>
+<td><code>CHAT_MUTE_MAX_MINUTES</code></td>
+<td><code>525600</code></td>
+<td>Longer mutes are cut to this (a year)</td>
+</tr>
+<tr>
+<td><code>LOG_LEVEL</code></td>
+<td><code>info</code></td>
+<td><code>debug</code>, <code>info</code>, <code>warn</code> or <code>error</code></td>
+</tr>
+</tbody>
+</table>
+</main>
+</div>
+</body>
+</html>

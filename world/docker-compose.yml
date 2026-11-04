@@ -1,0 +1,273 @@
+# World test stack: world + chat (../chat) + real auth (built from ../auth, unmodified) + admin app (../admin) + one
+# MySQL 8.4 + Mailpit.
+# Requires .env (cp .env.example .env). Host ports differ from the auth stack so both can run side by side.
+name: chthonic-world
+
+services:
+  world:
+    build: .
+    image: chthonic-world:dev
+    env_file: .env
+    environment:
+      # Inside the compose network these replace the host-side values from .env.
+      WORLD_PORT: 7777
+      DB_HOST: mysql
+      DB_PORT: 3306
+      AUTH_JWKS_URL: http://auth:3000/.well-known/jwks.json
+      TLS_DEV_CERT_DIR: /app/certs
+      MIGRATIONS_DIR: /app/migrations
+      LUA_ROOT: /app/lua
+      MAP_ROOT: /app/maps
+      # The sample's game state machine (lua/fsms/zone_cycle.lua); set GAME_STATE_MACHINES in .env to override.
+      GAME_STATE_MACHINES: ${GAME_STATE_MACHINES-zone_cycle}
+      # Lag simulator, testing only (0 = off): from .env or the shell, e.g. SIM_LATENCY_MS=150 SIM_JITTER_MS=50.
+      SIM_LATENCY_MS: ${SIM_LATENCY_MS:-0}
+      SIM_JITTER_MS: ${SIM_JITTER_MS:-0}
+      # Map context update workers (docs/world/configuration.html): from .env or the shell, e.g. MAP_THREADS=4.
+      MAP_THREADS: ${MAP_THREADS:-1}
+      # Net threads (TLS + socket I/O) and the connection cap: from .env or the shell (tests/load.sh sets both).
+      NET_THREADS: ${NET_THREADS:-4}
+      MAX_CONNECTIONS: ${MAX_CONNECTIONS:-1000}
+      # The chat service (docs/chat): clients are told CHAT_PUBLIC_HOST:CHAT_HOST_PORT (the host's view); the
+      # internal link goes to the compose service. The world starts and runs without it.
+      CHAT_PUBLIC_HOST: ${CHAT_PUBLIC_HOST:-127.0.0.1}
+      CHAT_PUBLIC_PORT: ${CHAT_HOST_PORT:-7778}
+      CHAT_LINK_HOST: chat
+      CHAT_LINK_PORT: 7779
+      CHAT_LINK_SECRET: ${CHAT_LINK_SECRET:?set CHAT_LINK_SECRET in .env}
+      # Admin port for the admin service (docs/world/security.html#admin-port): on the compose network only,
+      # never published below. WORLD_ADMIN_SECRET unset or empty turns it off.
+      WORLD_ADMIN_HOST: 0.0.0.0
+      WORLD_ADMIN_PORT: 7780
+      WORLD_ADMIN_SECRET: ${WORLD_ADMIN_SECRET-}
+    ports:
+      - "${WORLD_HOST_PORT:-7777}:7777"
+    volumes:
+      - world-certs:/app/certs
+      # Lua components, state machines and systems (docs/world/lua.html): edit, then
+      # `docker compose restart world`.
+      # Point the left side at a folder shared with the game client to share its components/.
+      - ./lua:/app/lua:ro
+      # Maps (docs/world/maps.html): MAPS_DIR (default ./maps), <folder>/map.json each; restart world after edits.
+      - ${MAPS_DIR:-./maps}:/app/maps:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      # TCP accept only; the server drops the half-open probe after its failed TLS handshake.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/7777"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    stop_grace_period: 15s # SIGTERM -> graceful shutdown (SHUTDOWN_TIMEOUT_MS) before Docker's SIGKILL
+    restart: unless-stopped
+
+  # Chat service (docs/chat): whispers, channels, zone chat, GM mutes. Shares the world's dev certificate
+  # (world-certs, read-only: the world makes it), so clients trust one CA file.
+  chat:
+    build:
+      context: ..
+      dockerfile: chat/Dockerfile
+    image: chthonic-chat:dev
+    environment:
+      CHAT_PORT: 7778
+      CHAT_LINK_PORT: 7779
+      CHAT_LINK_SECRET: ${CHAT_LINK_SECRET:?set CHAT_LINK_SECRET in .env}
+      CHAT_CHANNELS: ${CHAT_CHANNELS:-General,Trade,LFG}
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: ${CHAT_DB_USER:-chthonic_chat}
+      DB_PASSWORD: ${CHAT_DB_PASSWORD:?set CHAT_DB_PASSWORD in .env}
+      DB_NAME: ${CHAT_DB_NAME:-chthonic_chat}
+      AUTH_JWKS_URL: http://auth:3000/.well-known/jwks.json
+      JWT_ISSUER: ${JWT_ISSUER:-chthonic-auth}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-chthonic}
+      TLS_CERT_FILE: /app/certs/server.crt
+      TLS_KEY_FILE: /app/certs/server.key
+      MIGRATIONS_DIR: /app/migrations
+      LOG_LEVEL: ${CHAT_LOG_LEVEL:-info}
+    ports:
+      - "${CHAT_HOST_PORT:-7778}:7778"
+    volumes:
+      - world-certs:/app/certs:ro
+    depends_on:
+      chat-db-init:
+        condition: service_completed_successfully
+      auth:
+        condition: service_healthy
+      world:
+        condition: service_healthy # it makes the dev certificate
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/7778"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    stop_grace_period: 10s
+    restart: unless-stopped
+
+  # The chat database and user, on a fresh or an existing mysql volume (docker/chat-db-init.sh), before chat starts.
+  chat-db-init:
+    image: mysql:8.4
+    entrypoint: ["sh", "/init/chat-db-init.sh"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+      CHAT_DB_NAME: ${CHAT_DB_NAME:-chthonic_chat}
+      CHAT_DB_USER: ${CHAT_DB_USER:-chthonic_chat}
+      CHAT_DB_PASSWORD: ${CHAT_DB_PASSWORD:?set CHAT_DB_PASSWORD in .env}
+    volumes:
+      - ./docker/chat-db-init.sh:/init/chat-db-init.sh:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+
+  # Admin web app + API (docs/admin): accounts, characters, realms, online/kick, audit log.
+  # http://localhost:3200, published on the host's loopback only. Sign in with the SEED_ADMIN_* account.
+  admin:
+    build: ../admin
+    image: chthonic-admin:dev
+    environment:
+      PORT: 3200
+      COOKIE_SECURE: "false" # plain http on localhost; keep the default (true) behind HTTPS
+      AUTH_URL: http://auth:3000
+      JWT_ISSUER: ${JWT_ISSUER:-chthonic-auth}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-chthonic}
+      DB_HOST: mysql
+      DB_PORT: 3306
+      ADMIN_DB_USER: ${ADMIN_DB_USER:-chthonic_admin}
+      ADMIN_DB_PASSWORD: ${ADMIN_DB_PASSWORD:?set ADMIN_DB_PASSWORD in .env}
+      ADMIN_DB_NAME: ${ADMIN_DB_NAME:-chthonic_admin}
+      WORLD_DB_USER: ${ADMIN_WORLD_DB_USER:-chthonic_world_admin}
+      WORLD_DB_PASSWORD: ${ADMIN_WORLD_DB_PASSWORD:?set ADMIN_WORLD_DB_PASSWORD in .env}
+      WORLD_DB_NAME: ${DB_NAME:?set DB_NAME in .env}
+      # The world's; empty fails the admin service's config check (integration.sh empties it to test the port off).
+      WORLD_ADMIN_SECRET: ${WORLD_ADMIN_SECRET-}
+      WORLD_ADMIN_CA_FILE: /certs/server.crt
+    ports:
+      - "127.0.0.1:${ADMIN_HOST_PORT:-3200}:3200"
+    volumes:
+      - world-certs:/certs:ro # the world's self-signed dev certificate is its own CA
+    depends_on:
+      admin-db-init:
+        condition: service_completed_successfully
+      auth:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # The admin service's databases/users and the local realm's admin endpoint (docker/admin-db-init.sh). Waits for
+  # world (its migrations make the characters table the grant names) and auth (realms).
+  admin-db-init:
+    image: mysql:8.4
+    entrypoint: ["sh", "/init/admin-db-init.sh"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+      ADMIN_DB_NAME: ${ADMIN_DB_NAME:-chthonic_admin}
+      ADMIN_DB_USER: ${ADMIN_DB_USER:-chthonic_admin}
+      ADMIN_DB_PASSWORD: ${ADMIN_DB_PASSWORD:?set ADMIN_DB_PASSWORD in .env}
+      ADMIN_WORLD_DB_USER: ${ADMIN_WORLD_DB_USER:-chthonic_world_admin}
+      ADMIN_WORLD_DB_PASSWORD: ${ADMIN_WORLD_DB_PASSWORD:?set ADMIN_WORLD_DB_PASSWORD in .env}
+      WORLD_DB_NAME: ${DB_NAME:?set DB_NAME in .env}
+      AUTH_DB_NAME: ${AUTH_DB_NAME:-chthonic_auth}
+      REALM_ID: ${REALM_ID:-1}
+      WORLD_HOST_PORT: ${WORLD_HOST_PORT:-7777}
+    volumes:
+      - ./docker/admin-db-init.sh:/init/admin-db-init.sh:ro
+    depends_on:
+      world:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    restart: "no"
+
+  auth:
+    build: ../auth
+    environment:
+      PORT: 3000
+      # TEST ONLY: bots send a unique X-Forwarded-For each so auth's per-IP rate limits apply per bot.
+      TRUST_PROXY: "true"
+      APP_BASE_URL: http://localhost:${AUTH_HOST_PORT:-3100}
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: ${AUTH_DB_USER:-chthonic_auth}
+      DB_PASSWORD: ${AUTH_DB_PASSWORD:?set AUTH_DB_PASSWORD in .env}
+      DB_NAME: ${AUTH_DB_NAME:-chthonic_auth}
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      SMTP_SECURE: "false"
+      MAIL_FROM: Chthonic <no-reply@chthonic.local>
+      JWT_ISSUER: ${JWT_ISSUER:-chthonic-auth}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-chthonic}
+      KEYS_DIR: /app/keys
+      # The first admin (for the admin app), created pre-verified on start; both or neither.
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL-}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD-}
+    ports:
+      - "${AUTH_HOST_PORT:-3100}:3000"
+    volumes:
+      - auth-keys:/app/keys
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+      # The image creates auth's database and user, exactly what the auth container expects.
+      MYSQL_DATABASE: ${AUTH_DB_NAME:-chthonic_auth}
+      MYSQL_USER: ${AUTH_DB_USER:-chthonic_auth}
+      MYSQL_PASSWORD: ${AUTH_DB_PASSWORD:?set AUTH_DB_PASSWORD in .env}
+      # Read by docker/mysql-init.sh
+      WORLD_DB_NAME: ${DB_NAME:?set DB_NAME in .env}
+      WORLD_TEST_DB_NAME: ${TEST_DB_NAME:-chthonic_world_test}
+      WORLD_DB_USER: ${DB_USER:?set DB_USER in .env}
+      WORLD_DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+    ports:
+      - "${MYSQL_HOST_PORT:-3307}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./docker/mysql-init.sh:/docker-entrypoint-initdb.d/10-world.sh:ro
+    healthcheck:
+      # TCP ping fails during first-run init (server runs with skip-networking), so healthy means really ready.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:v1.31.6
+    ports:
+      - "${MAILPIT_HOST_PORT:-8026}:8025"
+    restart: unless-stopped
+
+  # Test client, run on demand: docker compose run --rm bot --scenario auth
+  # No depends_on chat: the chat-down scenario stops it, and a run would start it again.
+  bot:
+    image: chthonic-world:dev
+    profiles: ["tools"]
+    entrypoint: ["./chthonic_bot", "--auth-url", "http://auth:3000", "--mailpit-url", "http://mailpit:8025",
+                 "--host", "world", "--port", "7777", "--ca", "/certs/server.crt", "--map-root", "/app/maps",
+                 "--chat-host", "chat", "--chat-port", "7778", "--chat-link-port", "7779", "--admin-port", "7780"]
+    environment:
+      WORLD_ADMIN_SECRET: ${WORLD_ADMIN_SECRET-} # admin scenarios
+    volumes:
+      - world-certs:/certs:ro
+      - ${MAPS_DIR:-./maps}:/app/maps:ro # terrain scenario: the world's maps, for ground heights
+      - auth-keys:/auth-keys:ro # test only: scenario 8 mints an expired token with auth's key
+    depends_on:
+      world:
+        condition: service_healthy
+
+volumes:
+  mysql-data:
+  auth-keys:
+  world-certs:

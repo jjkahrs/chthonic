@@ -1,0 +1,29 @@
+/* Chthonic docs: one stylesheet for every page under docs/ (and world/tools/mapbake/docs). */
+:root { --bg: #fff; --fg: #1d1f23; --muted: #5b616b; --line: #dde1e6; --accent: #3b5bdb; --code: #f3f4f6; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #16181c; --fg: #e4e6ea; --muted: #9aa0a9; --line: #2c3036; --accent: #8ea6ff; --code: #22252b; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.55 system-ui, sans-serif; }
+a { color: var(--accent); }
+header.top { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; padding: .6rem 1rem; border-bottom: 1px solid var(--line); }
+header.top .brand { font-weight: 700; text-decoration: none; color: var(--fg); }
+header.top nav { display: flex; flex-wrap: wrap; gap: 1rem; }
+header.top nav a { text-decoration: none; }
+.layout { display: flex; gap: 2rem; max-width: 1200px; margin: 0 auto; padding: 1rem; }
+nav.side { flex: 0 0 200px; }
+nav.side h2 { font-size: 1rem; margin-top: 0; }
+nav.side ul { list-style: none; padding: 0; margin: 0; }
+nav.side li { margin: .25rem 0; }
+nav.side a { text-decoration: none; }
+nav.side a.active { font-weight: 700; color: var(--fg); }
+main { flex: 1; min-width: 0; }
+code, pre { font-family: ui-monospace, Consolas, monospace; font-size: .9em; background: var(--code); border-radius: 4px; }
+code { padding: .05em .3em; }
+pre { padding: .75rem 1rem; overflow-x: auto; }
+pre code { padding: 0; background: none; }
+table { border-collapse: collapse; margin: 1rem 0; display: block; overflow-x: auto; }
+th, td { border: 1px solid var(--line); padding: .35rem .6rem; text-align: left; vertical-align: top; }
+th { background: var(--code); }
+.pages { color: var(--muted); }
+@media (max-width: 760px) { .layout { flex-direction: column; } nav.side { flex: none; } }

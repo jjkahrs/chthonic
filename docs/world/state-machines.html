@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>State machines - Chthonic World Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html" class="active">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="state-machines">State machines</h1>
+<p>Server Lua and server C++ can drive finite state machines with the same definition files and rules as the game client. This page covers the file format, validation, <code>ctx</code>, the transition
+rules, and the <code>chthonic.fsm</code> API as the server runs them. A game's <code>fsms/</code> folder can be shared with the server like <code>components/</code>. The
+code lives in <code>server/lua/state_machines.*</code> and <code>server/lua/lua_state_machines.*</code>.</p>
+<ul>
+<li><strong>Where they run:</strong> every <a href="maps.html#map-contexts">map context</a> and the realm context load <code>fsms/</code>. The game
+  machines run in the realm context only; each map's <code>chthonic.fsm</code> reads a copy of their states (refreshed at every serial point), and
+  a change of one from a map is checked against that copy (a denial warns and returns <code>false</code> there, as before), returns
+  <code>true</code> and is applied in the realm at the next serial point, where its callbacks run. The same change asked by several maps at one
+  serial point is applied once. Character and NPC machines run in the context of the map their entity is on, and move along with it
+  (the <code>StateMachine</code> component keeps its current state).</li>
+<li><strong>Definitions:</strong> <code>LUA_ROOT/fsms/**/*.lua</code>, one machine per file, loaded once per context before the systems' <code>init</code>.
+  Each file runs in its own sandboxed environment with the full read-only <code>chthonic</code> API. <code>chthonic.log</code> from a callback is
+  prefixed with the definition path (<code>fsms/door.lua: ...</code>). A missing <code>fsms/</code> folder means no machines.</li>
+<li><strong>Game machines:</strong> <code>GAME_STATE_MACHINES</code> lists them by name. At startup, in the realm context and before any map's
+  systems load (so an <code>init</code> already reads their state), each enters its <code>initial</code> state: <code>enter</code> runs with
+  <code>ctx.from = nil</code>, and no <code>fsm.changed</code> is published. Game machines run for the server's lifetime; shutdown runs no
+  <code>exit</code>.</li>
+<li><strong>Character and NPC machines:</strong> use the writable built-in <code>StateMachine</code> (<code>machine</code>, <code>initialState</code>) through <code>chthonic.add</code>,
+  <code>chthonic.set</code>, <code>chthonic.get</code>, <code>chthonic.has</code>, <code>chthonic.remove</code> and <code>chthonic.query</code>.<ul>
+<li><code>chthonic.add</code> alone leaves <code>machine</code> empty: there is no machine yet, and <code>chthonic.fsm.*</code> on that character raises.</li>
+<li>Setting <code>machine</code> enters that machine's initial state at once. That is <code>initialState</code> if it names a state,
+  otherwise the definition's <code>initial</code>, with a warning. <code>from</code> is <code>nil</code> and no event is published.</li>
+<li>Changing <code>machine</code> enters the new machine's initial state, with no <code>exit</code> of the old one. Changing only
+  <code>initialState</code> does nothing. A <code>machine</code> with no valid definition is logged once.</li>
+<li>Removal, logout and graceful shutdown just drop the machine, with no <code>exit</code>.</li>
+<li>The typical use is a system's <code>onEnter</code> adding and setting it (see the sample).</li>
+</ul>
+</li>
+<li><strong>Not persisted, not replicated:</strong> <code>StateMachine</code> and the current state never reach MySQL (the <code>components</code> column)
+  or clients. A character starts its machine again from the initial state on every login. To tell clients about a
+  transition, send it from <code>enter</code> (<code>chthonic.sendTo</code> / <code>sendNearby</code>).</li>
+<li><strong>Events:</strong> <code>fsm.changed</code> <code>{machine, entity, from, to}</code> goes on the event bus of the entity's map (the publisher set
+  to the definition path), delivered at the normal drain (see <a href="events.html#events">Events</a>), so a transition made in
+  <code>update</code> reaches subscribers in the same tick. A game machine's (<code>entity</code> <code>null</code>) goes on the realm's bus and is passed on
+  to every map's bus at the start of the next tick: one changed by C++ between ticks reaches the maps' subscribers in that tick, one a
+  map asked for at the end of the tick after it was applied.</li>
+<li><strong>Callback errors:</strong> an error in <code>enter</code> or <code>exit</code> is logged as <code>State machine fsms/door.lua: enter "open" failed:
+  fsms/door.lua:5: ...</code> with a traceback. The transition still commits and the machine stays usable; no system is
+  disabled. A callback runs under the 2 s script budget of whatever entered Lua. When a system's <code>chthonic.fsm.change</code> of a
+  character or NPC machine triggers a runaway callback, the callback is stopped and logged, and then that system is disabled
+  too, because they share one budget. A game machine's callback runs in the realm, under the realm's own
+  budget: stopped and logged, and no system is disabled.</li>
+<li><strong>Misuse:</strong> every bad <code>chthonic.fsm.*</code> argument raises at the calling line, which a system callback treats like any other
+  error (the system is disabled). An unknown state name passed to <code>change</code> is a denial (<code>false</code> and a warning).</li>
+<li><strong>Startup:</strong> a rejected <code>fsms/</code> file or a <code>GAME_STATE_MACHINES</code> name with no valid definition refuses the start, like
+  any other Lua error (one <code>Lua error</code> line each, <code>startup failed: Lua</code>, exit status 1). That also applies when
+  <code>LUA_ROOT</code> is missing and <code>GAME_STATE_MACHINES</code> is set.</li>
+<li><strong>C++:</strong> <code>World::realm_fsm()</code> (the game machines) and <code>World::fsm(map)</code> (that map's characters and NPCs by wire
+  id; <code>World::fsm()</code>: <code>START_MAP</code>'s) are <code>lua::StateMachines</code> (also <code>Runtime::fsm()</code>), with <code>state</code>, <code>change</code>,
+  <code>canChange</code> and <code>states</code>. They apply the same rules, events and logging as <code>chthonic.fsm</code>, and a bad target throws
+  <code>std::invalid_argument</code>.</li>
+<li><strong>Not on the server:</strong> hot reload, scenes and <code>chthonic.loadScene</code>, editor
+  panels.</li>
+</ul>
+<pre><code class="language-cpp">std::string phase = world.realm_fsm().state(&quot;zone_cycle&quot;);              // a game machine by name
+bool moved = world.fsm(world.map_of(e)).change(lua::EntityId{7}, &quot;moving&quot;); // a character's machine by wire id
+</code></pre>
+</main>
+</div>
+</body>
+</html>

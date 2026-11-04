@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overview - Chthonic World Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html" class="active">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="chthonic-world-server">Chthonic World Server</h1>
+<p>MMORPG world server for Chthonic, written in C++20. It covers the following:</p>
+<ul>
+<li><strong>Connections:</strong> clients connect over TLS-over-TCP and log in with an access token from the <a href="../auth/index.html">auth service</a>.</li>
+<li><strong>Characters:</strong> clients create, list and delete characters, then enter the map they were saved on (see "Maps").</li>
+<li><strong>Movement:</strong> the server validates every move (map bounds and max speed) and replicates it to nearby players through grid-based interest management.</li>
+<li><strong>Chat:</strong> proximity chat: "say" and emotes reach everyone in view, a "yell" everyone on the map within <code>CHAT_YELL_RADIUS</code>. Whispers, channels and the zone channel are the realm's <a href="../chat/index.html">chat service</a>'s; the world tells it who is online on which map over an internal link and drops a muted character's proximity chat.</li>
+<li><strong>Lua:</strong> game-defined components, state machines and server-authoritative systems on the tick, persisted per character and replicated to clients (see "Lua components and systems").</li>
+<li><strong>NPCs:</strong> server-authoritative NPCs come from per-tile spawn files (with respawn timers and patrol paths) or from Lua systems, which move and destroy them; they reach players through the same interest management, with their components and state machines (see "NPCs" and "NPC spawns").</li>
+<li><strong>Architecture:</strong> an EnTT ECS runs on a fixed 20 Hz tick on one game thread, which also handles every client message. TLS and socket I/O run on <code>NET_THREADS</code> net threads (default 4), and characters persist to MySQL on DB worker threads, so the tick never waits on the network or the database.</li>
+</ul>
+<p>The wire format is in <a href="protocol.html">Protocol</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Dir</th>
+<th>What</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>protocol/</code></td>
+<td>Static lib: frame codec, opcodes and message structs. No Asio, DB or ECS, so a game client can reuse it</td>
+</tr>
+<tr>
+<td><code>map/</code></td>
+<td>Static lib <code>chthonic_map</code>: <code>map.json</code> parsing and tile math. Standard library + nlohmann_json only, no file IO, so the tools and the bot can reuse it</td>
+</tr>
+<tr>
+<td><code>server/</code></td>
+<td><code>chthonic_world</code>: <code>core/</code> (config, log, clock, limits, chat rules), <code>net/</code> (TLS, sessions), <code>auth/</code> (JWKS, JWT), <code>db/</code> (MySQL, migrations, worker), <code>world/</code> (ECS components and systems), <code>lua/</code> (Lua sandbox, component and state machine definitions, systems runtime, event bus, state machines), <code>app/</code> (glue, the chat link). <code>service_core.cmake</code> builds the part the <a href="../chat/index.html">chat service</a> shares (<code>chthonic_service_core</code>: <code>core/</code> env, log, chat rules; <code>net/</code>; <code>auth/</code>; <code>db/</code> MySQL and migrations) and <code>chthonic_protocol</code></td>
+</tr>
+<tr>
+<td><code>bot/</code></td>
+<td><code>chthonic_bot</code>: headless test client covering auth HTTP, Mailpit verification, TLS, scripted scenarios and load mode</td>
+</tr>
+<tr>
+<td><code>migrations/</code></td>
+<td><code>NNN_name.sql</code>, applied in order at startup</td>
+</tr>
+<tr>
+<td><code>lua/</code></td>
+<td>Sample Lua components, state machines and systems (<code>LUA_ROOT</code> in the image)</td>
+</tr>
+<tr>
+<td><code>tests/</code></td>
+<td><code>self_check.cpp</code> + <code>lua_checks.cpp</code> (ctest), <code>integration.sh</code>, <code>load.sh</code>, <code>docs_check.sh</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="pages">Pages</h2>
+<ul class="pages"><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul>
+</main>
+</div>
+</body>
+</html>

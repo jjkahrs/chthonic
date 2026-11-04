@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overview - Chthonic Admin App</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="../world/index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Admin App</h2><ul><li><a href="index.html" class="active">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="permissions.html">Permissions</a></li><li><a href="endpoints.html">Endpoints</a></li><li><a href="security.html">Security behaviour</a></li></ul></nav>
+<main>
+<h1 id="chthonic-admin-app">Chthonic Admin App</h1>
+<p>Web app for admins and game masters: accounts, roles, bans, characters, realms and who is online, across every realm, with an audit log of every change. It lives in <code>admin</code>: a React single-page app (<code>web/</code>, Vite + React Router + TanStack Query, plain CSS in the Chthonic palette) served by a Node 24 / TypeScript / Express 5 backend-for-frontend on one port (3200).</p>
+<h2 id="how-it-fits">How it fits together</h2>
+<pre><code>browser (SPA, cookies only) --HTTP--&gt; admin service :3200
+                                       |-- auth /v1/admin/*               accounts, bans, roles, realms (caller's token)
+                                       |-- MySQL chthonic_world.characters    SELECT/UPDATE only
+                                       |-- MySQL chthonic_admin               audit log, realm endpoint copy
+                                       '-- world admin port :7780 per realm (TLS + secret): online list, kick, instances
+</code></pre>
+<ul>
+<li><strong>Auth owns accounts.</strong> Account and realm changes are proxied to the <a href="../auth/endpoints.html">auth admin endpoints</a> with the signed-in user's own access token, so auth re-checks every permission. The admin service never connects to <code>chthonic_auth</code>.</li>
+<li><strong>Characters</strong> are read and written directly in <code>chthonic_world.characters</code>. Before a write, the realm's world server is asked whether the account is online (<a href="security.html#online-guard">online guard</a>).</li>
+<li><strong>Online / kick</strong> use each world server's <a href="../world/security.html#admin-port">admin port</a>. A kick disconnects the client the same way a duplicate login does, so the character is saved.</li>
+<li><strong>Audit:</strong> every mutating request writes one row to <code>chthonic_admin.admin_audit</code>, on success and on failure. Admins read it on the Audit page.</li>
+</ul>
+<h2 id="pages-in-the-app">Pages in the app</h2>
+<table>
+<thead>
+<tr><th>Page</th><th>Who</th><th>What</th></tr>
+</thead>
+<tbody>
+<tr><td>Login</td><td>admin, gm</td><td>Players are refused (403)</td></tr>
+<tr><td>Accounts</td><td>admin, gm</td><td>Search by email or id; filter by role, banned, verified, locked; paginated. Admins also get <em>Create account</em></td></tr>
+<tr><td>Account detail</td><td>admin, gm</td><td>Info, ban history, characters. Ban (with a confirmation) and unban; admins also set the role, verify the email, send a password reset, unlock, revoke sessions and delete (with a confirmation)</td></tr>
+<tr><td>Characters</td><td>admin, gm</td><td>Search by name prefix, realm, account; include deleted</td></tr>
+<tr><td>Character detail</td><td>admin, gm</td><td>Rename, move, edit components/options JSON, delete (with a confirmation) and restore. An online character shows a Kick button; a write while it is online opens a dialog that offers Kick. Admins get a <em>Force</em> checkbox when the realm is unreachable</td></tr>
+<tr><td>Online</td><td>admin, gm</td><td>Sessions per realm (lobby sessions show as <em>lobby</em>); Kick with a reason and a confirmation</td></tr>
+<tr id="instances"><td>Instances</td><td>admin, gm</td><td>The live map contexts per realm: each world map's (instance <em>world</em>) and every <a href="../world/instances.html">instance copy</a> with its id, key, players, NPCs, created time and, for an empty copy, since when (its timer runs). Read-only; <strong>Refresh</strong> asks the realm again</td></tr>
+<tr><td>Realms</td><td>admin</td><td>Create, edit and delete realms, including the admin host/port; reachability of each admin port</td></tr>
+<tr><td>Audit</td><td>admin</td><td>Filter by actor, action, target and date range; before/after JSON per entry</td></tr>
+</tbody>
+</table>
+<p>API errors are shown with a readable label and their code, for example <em>Character is online</em> <code>character_online</code>. Screenshots of every page for both roles are in <code>admin/screenshots/</code> (made by <code>npm run screenshots</code>).</p>
+<h2 id="pages">Pages</h2>
+<ul class="pages"><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="permissions.html">Permissions</a></li><li><a href="endpoints.html">Endpoints</a></li><li><a href="security.html">Security behaviour</a></li></ul>
+</main>
+</div>
+</body>
+</html>

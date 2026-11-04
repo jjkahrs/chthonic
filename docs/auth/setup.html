@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setup and commands - Chthonic Auth Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="index.html">Auth Server</a><a href="../world/index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Auth Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html" class="active">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="endpoints.html">Endpoints</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="token-verification.html">Token verification</a></li></ul></nav>
+<main>
+<h1 id="setup">Setup</h1>
+<pre><code class="language-sh">cd auth
+cp .env.example .env        # dev defaults; change the passwords
+docker compose up -d --build
+curl -s localhost:3000/health   # {&quot;status&quot;:&quot;ok&quot;,&quot;db&quot;:&quot;ok&quot;}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Service</th>
+<th>Port</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>auth</code></td>
+<td>3000</td>
+<td>Runs migrations, creates or loads the signing key and seeds the admin on start</td>
+</tr>
+<tr>
+<td><code>mysql</code></td>
+<td><code>${MYSQL_PORT:-3306}</code></td>
+<td>MySQL 8.4, volume <code>mysql-data</code>. First start also creates <code>chthonic_auth_test</code></td>
+</tr>
+<tr>
+<td><code>mailpit</code></td>
+<td>8025 (UI/API), 1025 (SMTP)</td>
+<td>Every email the service sends shows up at http://localhost:8025</td>
+</tr>
+</tbody>
+</table>
+<p><code>docker compose down</code> stops the stack and keeps the data. <code>docker compose down -v</code> also deletes the database and the dev signing key.</p>
+<h2 id="running-on-the-host">Running on the host</h2>
+<p>To run the service on the host instead, keep <code>mysql</code> and <code>mailpit</code> in compose:</p>
+<pre><code class="language-sh">npm ci
+docker compose up -d mysql mailpit
+npm run dev          # tsx, reads .env
+</code></pre>
+<h1 id="commands">Commands</h1>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>npm run build</code></td>
+<td>Compile <code>src/</code> to <code>dist/</code></td>
+</tr>
+<tr>
+<td><code>npm run typecheck</code></td>
+<td><code>tsc --noEmit</code> over src and tests</td>
+</tr>
+<tr>
+<td><code>npm run lint</code></td>
+<td>ESLint (typescript-eslint recommended)</td>
+</tr>
+<tr>
+<td><code>npm test</code></td>
+<td>Vitest + supertest against the compose MySQL, database <code>TEST_DB_NAME</code></td>
+</tr>
+<tr>
+<td><code>npm run migrate</code></td>
+<td>Apply pending migrations to <code>DB_NAME</code>. In the container: <code>docker compose exec auth node dist/migrate-cli.js</code></td>
+</tr>
+<tr>
+<td><code>npm run user -- create &lt;email&gt; &lt;role&gt; [--password &lt;pw&gt;]</code></td>
+<td>Create a pre-verified account with role <code>player</code>, <code>gm</code> or <code>admin</code>. Without <code>--password</code> it prompts with hidden input, which keeps the password out of shell history. Fails if the email is taken. In the container: <code>docker compose exec auth node dist/user-cli.js create ...</code></td>
+</tr>
+<tr>
+<td><code>npm run user -- set-role &lt;email&gt; &lt;role&gt;</code></td>
+<td>Change the role of an existing account</td>
+</tr>
+<tr>
+<td><code>npm run dev</code></td>
+<td>Run the server from source</td>
+</tr>
+</tbody>
+</table>
+<p><code>npm test</code> needs <code>.env</code> and the compose <code>mysql</code> running. One test also needs <code>mailpit</code>: it sends a real email over SMTP and reads it back through the Mailpit API (<code>MAILPIT_API_URL</code>, default <code>http://127.0.0.1:8025</code>). The other tests use an in-memory mailer and a fake clock, so the lockout and expiry tests don't sleep. Test files run one at a time and empty the test database before each test.</p>
+<h2 id="migrations">Migrations</h2>
+<p>Migrations are plain <code>migrations/NNN_name.sql</code> files. They run in filename order, once each, and are tracked in <code>schema_migrations</code>. The server applies pending migrations on every start, and a MySQL named lock keeps two instances from migrating at the same time. Never edit a migration that has already been applied; add a new one. MySQL DDL auto-commits, so if a file fails partway through you have to repair it by hand.</p>
+</main>
+</div>
+</body>
+</html>

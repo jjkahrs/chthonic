@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Endpoints - Chthonic Auth Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="index.html">Auth Server</a><a href="../world/index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Auth Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="endpoints.html" class="active">Endpoints</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="token-verification.html">Token verification</a></li></ul></nav>
+<main>
+<h1 id="endpoints">Endpoints</h1>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Auth</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GET</td>
+<td><code>/health</code></td>
+<td>none</td>
+<td>Liveness + <code>SELECT 1</code>. 200 or 503 <code>db_unavailable</code></td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/.well-known/jwks.json</code></td>
+<td>none</td>
+<td>Public signing keys</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/auth/register</code></td>
+<td>none</td>
+<td><code>{email,password}</code> → 202. Same response for taken emails. 5/h/IP</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/auth/verify-email</code></td>
+<td>none</td>
+<td><code>{token}</code> → 200. Single use, 24h</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/auth/resend-verification</code></td>
+<td>none</td>
+<td><code>{email}</code> → 202 always. 5/h/IP</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/auth/login</code></td>
+<td>none</td>
+<td><code>{email,password}</code> → token pair. 20/min/IP</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/auth/refresh</code></td>
+<td>none</td>
+<td><code>{refreshToken}</code> → new pair. The old token is consumed</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/auth/logout</code></td>
+<td>none</td>
+<td><code>{refreshToken}</code> → 204. Revokes that session</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/auth/forgot-password</code></td>
+<td>none</td>
+<td><code>{email}</code> → 202 always. 5/h/IP</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/auth/reset-password</code></td>
+<td>none</td>
+<td><code>{token,password}</code> → 200. Revokes all sessions</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/me</code></td>
+<td>bearer</td>
+<td>id, email, role, emailVerified, createdAt</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/realms</code></td>
+<td>bearer</td>
+<td>Realms ordered by <code>sortOrder</code>. Never includes <code>adminHost</code>/<code>adminPort</code></td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/admin/accounts</code></td>
+<td>admin, gm</td>
+<td>Search, ordered by id. Query: <code>q</code> (email substring, or exact id when all digits), <code>role</code>, <code>banned</code>, <code>verified</code>, <code>locked</code> (<code>true</code>/<code>false</code>), <code>limit</code> (1–100, default 50), <code>offset</code>. → <code>{accounts, total, limit, offset}</code>; each account has <code>failedLoginCount</code>, <code>lockedUntil</code> and <code>activeBan</code>. GMs only get <code>player</code> accounts</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/admin/accounts</code></td>
+<td>admin</td>
+<td><code>{email, password, role?}</code> → 201. Created already verified; <code>role</code> defaults to <code>player</code>. 409 <code>email_taken</code></td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/admin/accounts/:id</code></td>
+<td>admin, gm</td>
+<td>Account plus <code>bans</code> (full history, newest first, with <code>liftedAt</code>/<code>liftedBy</code>). GMs: player accounts only</td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><code>/v1/admin/accounts/:id</code></td>
+<td>admin</td>
+<td>Hard delete → 204. Bans, sessions and email tokens go with it. Self-delete → 400 <code>cannot_modify_self</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/admin/accounts/:id/verify-email</code></td>
+<td>admin</td>
+<td>Mark the email verified → 204</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/admin/accounts/:id/password-reset</code></td>
+<td>admin</td>
+<td>Send the normal "forgot password" email → 204</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/admin/accounts/:id/unlock</code></td>
+<td>admin</td>
+<td>Clear <code>failedLoginCount</code> and <code>lockedUntil</code> → 204</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/admin/accounts/:id/revoke-sessions</code></td>
+<td>admin</td>
+<td>Revoke every refresh token → 204</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/admin/accounts/:id/ban</code></td>
+<td>admin, gm</td>
+<td><code>{reason, expiresAt?}</code> → 201. Replaces the active ban and revokes sessions. GMs: player accounts only</td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><code>/v1/admin/accounts/:id/ban</code></td>
+<td>admin, gm</td>
+<td>Lift the ban → 204. GMs: player accounts only</td>
+</tr>
+<tr>
+<td>PUT</td>
+<td><code>/v1/admin/accounts/:id/role</code></td>
+<td>admin</td>
+<td><code>{role}</code>: <code>player</code>, <code>gm</code> or <code>admin</code></td>
+</tr>
+<tr>
+<td>GET, POST</td>
+<td><code>/v1/admin/realms</code></td>
+<td>admin</td>
+<td>List / create. Body adds optional <code>adminHost</code> + <code>adminPort</code> (the world server's internal admin endpoint; set both or neither)</td>
+</tr>
+<tr>
+<td>GET, PUT, DELETE</td>
+<td><code>/v1/admin/realms/:id</code></td>
+<td>admin</td>
+<td>Read / replace / delete</td>
+</tr>
+</tbody>
+</table>
+<h2 id="roles">Roles</h2>
+<p>Everything under <code>/v1/admin</code> needs an access token with role <code>admin</code>, except four routes that also accept <code>gm</code>: list accounts, account detail, ban and unban. A GM may use them only on accounts whose role is <code>player</code>; any other target gives 403 <code>forbidden</code>, and the account list only ever returns players to a GM. Access tokens already issued keep working until they expire (at most 15 minutes) after a ban, delete, role change or session revoke.</p>
+<h2 id="errors">Errors</h2>
+<p>Every error has this shape: <code>{"error":{"code":"snake_case","message":"…","details":…}}</code>. <code>details</code> is present only for <code>validation_error</code> (a list of <code>{path,message}</code>), <code>account_banned</code> (<code>{reason,expiresAt}</code>) and <code>account_locked</code> (<code>{lockedUntil}</code>). Responses never include stack traces or SQL.</p>
+<table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Codes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>400</td>
+<td><code>validation_error</code>, <code>invalid_token</code>, <code>cannot_modify_self</code></td>
+</tr>
+<tr>
+<td>401</td>
+<td><code>unauthorized</code>, <code>invalid_credentials</code>, <code>invalid_refresh_token</code></td>
+</tr>
+<tr>
+<td>403</td>
+<td><code>email_not_verified</code>, <code>account_banned</code>, <code>forbidden</code></td>
+</tr>
+<tr>
+<td>404</td>
+<td><code>not_found</code>, <code>account_not_found</code>, <code>realm_not_found</code></td>
+</tr>
+<tr>
+<td>409</td>
+<td><code>realm_name_taken</code>, <code>email_taken</code></td>
+</tr>
+<tr>
+<td>413</td>
+<td><code>payload_too_large</code> (JSON body limit is 10 kB)</td>
+</tr>
+<tr>
+<td>423</td>
+<td><code>account_locked</code></td>
+</tr>
+<tr>
+<td>429</td>
+<td><code>rate_limited</code>, with a <code>Retry-After</code> header</td>
+</tr>
+<tr>
+<td>500 / 503</td>
+<td><code>internal_error</code> / <code>db_unavailable</code></td>
+</tr>
+</tbody>
+</table>
+</main>
+</div>
+</body>
+</html>

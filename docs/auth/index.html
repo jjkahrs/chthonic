@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overview - Chthonic Auth Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="index.html">Auth Server</a><a href="../world/index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Auth Server</h2><ul><li><a href="index.html" class="active">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="endpoints.html">Endpoints</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="token-verification.html">Token verification</a></li></ul></nav>
+<main>
+<h1 id="chthonic-authentication-server">Chthonic Authentication Server</h1>
+<p>Account, session and realm-list API for Chthonic MMORPGs. TypeScript (strict, ESM), Node 24, Express 5, MySQL 8.4.</p>
+<ul>
+<li>Email + password accounts with email verification</li>
+<li>RS256 access tokens (15 min) published via JWKS, rotating refresh tokens (30 days) with reuse detection</li>
+<li>Password reset, per-IP rate limits and account lockout (state stored in MySQL)</li>
+<li>Bans, roles (<code>player</code>, <code>gm</code>, <code>admin</code>), realm list, admin endpoints</li>
+</ul>
+<p>Full API contract: <a href="../../auth/openapi.yaml"><code>openapi.yaml</code></a> (OpenAPI 3.1).</p>
+<h2 id="pages">Pages</h2>
+<ul class="pages"><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="endpoints.html">Endpoints</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="token-verification.html">Token verification</a></li></ul>
+</main>
+</div>
+</body>
+</html>

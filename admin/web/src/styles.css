@@ -1,0 +1,360 @@
+/* Admin app palette. */
+:root {
+  --accent: #ffaa00; /* buttons, tabs, header background */
+  --highlight: #ffcc00;
+  --darken: #ff9900;
+  --bg: #000000;
+  --card: #313131;
+  --field: #454545;
+  --field-hi: #818181;
+  --text: #f2f2f2;
+  --muted: #b0b0b0;
+  --danger: #e5484d;
+  --ok: #46a758;
+  color-scheme: dark;
+  font: 14px/1.45 system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+h1 {
+  font-size: 22px;
+  margin: 0 0 16px;
+}
+h2 {
+  font-size: 16px;
+  margin: 0 0 12px;
+}
+a {
+  color: var(--highlight);
+}
+code,
+pre {
+  font-family: ui-monospace, Consolas, monospace;
+}
+pre {
+  white-space: pre-wrap;
+  max-width: 480px;
+  font-size: 12px;
+}
+main {
+  padding: 20px 24px;
+}
+
+/* Header and tabs */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 0 24px;
+  background: var(--accent);
+  color: #000;
+}
+.brand {
+  font-weight: 700;
+  font-size: 16px;
+}
+.topbar nav {
+  display: flex;
+  flex: 1;
+}
+.topbar nav a {
+  padding: 14px 16px;
+  color: #000;
+  text-decoration: none;
+  font-weight: 600;
+}
+.topbar nav a:hover {
+  background: var(--highlight);
+}
+.topbar nav a.active {
+  background: var(--darken);
+  box-shadow: inset 0 -3px 0 #000;
+}
+.who {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.tab {
+  background: var(--card);
+  color: var(--text);
+}
+.tab.active {
+  background: var(--accent);
+  color: #000;
+}
+
+/* Controls */
+button,
+.button {
+  display: inline-block;
+  border: 0;
+  border-radius: 4px;
+  padding: 7px 14px;
+  background: var(--accent);
+  color: #000;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+button:hover,
+.button:hover {
+  background: var(--highlight);
+}
+button:active {
+  background: var(--darken);
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+button.secondary {
+  background: var(--field);
+  color: var(--text);
+}
+button.secondary:hover {
+  background: var(--field-hi);
+}
+button.danger {
+  background: var(--danger);
+  color: #fff;
+}
+input,
+select,
+textarea {
+  width: 100%;
+  margin-top: 4px;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--field);
+  color: var(--text);
+  font: inherit;
+}
+input:hover,
+select:hover,
+textarea:hover {
+  border-color: var(--field-hi);
+}
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--highlight);
+  background: var(--field-hi);
+  color: #000;
+}
+textarea {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+}
+label {
+  display: block;
+  margin-bottom: 10px;
+  color: var(--muted);
+}
+label.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+label.check input {
+  width: auto;
+  margin: 0;
+}
+label.small {
+  width: 90px;
+}
+.warn {
+  color: var(--highlight);
+}
+
+/* Layout */
+.card {
+  background: var(--card);
+  border-radius: 6px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.narrow {
+  max-width: 420px;
+}
+.grid2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 16px;
+}
+.row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.row.wrap {
+  flex-wrap: wrap;
+}
+.row.between {
+  justify-content: space-between;
+  align-items: center;
+}
+.row.end {
+  justify-content: flex-end;
+  margin: 12px 0 0;
+}
+.row label,
+.row input {
+  margin-bottom: 0;
+}
+.row select {
+  width: auto;
+  margin: 0;
+}
+.row button {
+  white-space: nowrap;
+}
+.filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 0 12px;
+  align-items: end;
+}
+.pager {
+  align-items: center;
+  margin-top: 10px;
+}
+dl {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 6px 12px;
+  margin: 0 0 12px;
+}
+dt {
+  color: var(--muted);
+}
+dd {
+  margin: 0;
+}
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--card);
+  border-radius: 6px;
+  overflow: hidden;
+}
+th,
+td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid #000;
+  vertical-align: top;
+}
+th {
+  background: var(--field);
+  font-weight: 600;
+}
+tr.deleted td {
+  color: var(--muted);
+}
+td .row {
+  margin: 0;
+}
+.card table {
+  background: transparent;
+}
+
+/* Status */
+.muted {
+  color: var(--muted);
+  font-weight: normal;
+}
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: var(--field);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.badge.danger {
+  background: var(--danger);
+  color: #fff;
+}
+.badge.online {
+  background: var(--ok);
+  color: #fff;
+}
+.badge.warn {
+  background: var(--highlight);
+  color: #000;
+}
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-left: 4px;
+}
+.dot.ok {
+  background: var(--ok);
+}
+.dot.down {
+  background: var(--danger);
+}
+.error {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-left: 4px solid var(--danger);
+  background: #3a1d1e;
+  border-radius: 4px;
+}
+.error code {
+  color: var(--muted);
+}
+.notice {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-left: 4px solid var(--accent);
+  background: var(--field);
+  border-radius: 4px;
+}
+
+/* Login and dialogs */
+.login {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+}
+.login form {
+  width: 360px;
+  border-top: 6px solid var(--accent);
+}
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(0 0 0 / 0.7);
+  z-index: 10;
+}
+.dialog {
+  width: 440px;
+  max-width: calc(100vw - 32px);
+  border-top: 6px solid var(--accent);
+}

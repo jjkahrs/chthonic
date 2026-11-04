@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overview - Chthonic Chat Service</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="../world/index.html">World Server</a><a href="index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Chat Service</h2><ul><li><a href="index.html" class="active">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="tests.html">Tests</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="chthonic-chat-service">Chthonic Chat Service</h1>
+<p>One chat service per realm (<code>chat</code>, C++20). It owns all chat that isn't proximity chat:</p>
+<ul>
+<li><strong>Whispers</strong> to a character by name, on any map of any world server of the realm. The sender gets an echo; a name with no chat connection gets "not online".</li>
+<li><strong>Fixed channels</strong> from <code>CHAT_CHANNELS</code> (default <code>General,Trade,LFG</code>), numbered <code>/1</code>, <code>/2</code>, <code>/3</code> in that order. Every client is put in the first (General) on each connect and can join and leave the others; there are no player-made channels.</li>
+<li><strong>The zone channel:</strong> everyone online on the sender's current map.</li>
+<li><strong>Ignore:</strong> <code>/ignore name</code> hides that character's whispers, channel and zone lines until logout (memory only).</li>
+<li><strong>GM mutes:</strong> a GM or admin (the <code>role</code> in their JWT) mutes a character for some minutes. A muted character's whispers, channel and zone lines are dropped here, and its say, yell and emote on every world server (the mutes go to them over the link). Mutes are stored in MySQL (<code>chthonic_chat</code>) and survive restarts.</li>
+</ul>
+<p>Proximity chat (say, <a href="../world/protocol.html#proximity-chat">yell, emote</a>) stays on the world server, so it keeps working when the chat service is down.</p>
+<h2 id="how-it-fits">How it fits together</h2>
+<pre><code>game client --TLS 7777--&gt; world server --TLS 7779 (internal link, shared secret)--&gt; chat service
+     |                         |  CharOnline / MapChanged / CharOffline  --&gt;         ^
+     |                         |  &lt;-- MuteState                                        |
+     +--------- TLS 7778, same access token (Hello, Auth) ------------------------------+</code></pre>
+<ol>
+<li>The client logs in to the world server and enters the world. The world server answers <code>EnterWorldOk</code>, then <code>ChatServer{host, port}</code> (<code>CHAT_PUBLIC_HOST</code> / <code>CHAT_PUBLIC_PORT</code>).</li>
+<li>The world server tells the chat service <code>CharOnline{account, character, name, map}</code> over its internal link, then each map change and the logout.</li>
+<li>The client opens a second TLS connection to the chat service with the same access token. The chat service verifies it against the auth service's JWKS, binds the connection to the account's online character (waiting up to <code>CHAT_BIND_TIMEOUT_MS</code> for its <code>CharOnline</code>), answers <code>AuthOk</code> and puts it in General.</li>
+<li>If the chat service goes down, the client's chat connection closes, say/yell/emote keep working, and the client reconnects with backoff; once back, it is in General again and rejoins its other channels.</li>
+</ol>
+<p>Several world servers can link to one chat service; each sends its own characters.</p>
+<h2 id="layout">Layout</h2>
+<table>
+<thead>
+<tr><th>Path</th><th>What</th></tr>
+</thead>
+<tbody>
+<tr>
+<td><code>server/chat_router.*</code></td>
+<td>Who is online on which map, which client is which character, and where each request goes (whispers, channels, zone, ignore, mutes). No network or database: the self-check drives it directly</td>
+</tr>
+<tr>
+<td><code>server/chat_server.*</code></td>
+<td>The network side: client connections (handshake, the hold until the character is online) and world links (secret, mutes on connect)</td>
+</tr>
+<tr>
+<td><code>server/mute_store.*</code></td>
+<td>Mutes in MySQL, written on a worker thread</td>
+</tr>
+<tr>
+<td><code>server/config.*</code>, <code>server/main.cpp</code></td>
+<td>Environment config and startup (migrations, mutes, TLS, JWKS)</td>
+</tr>
+<tr>
+<td><code>migrations/</code></td>
+<td><code>NNN_name.sql</code> for <code>chthonic_chat</code>, applied in order at startup (<code>schema_migrations</code>)</td>
+</tr>
+<tr>
+<td><code>tests/self_check.cpp</code></td>
+<td><code>chat_self_check</code> (ctest)</td>
+</tr>
+<tr>
+<td><code>../world/service_core.cmake</code></td>
+<td>What it shares with the world server, compiled from <code>world</code>: <code>chthonic_protocol</code> (frames and messages) and <code>chthonic_service_core</code> (TLS sessions, JWT/JWKS verification, <code>sanitize_chat</code>, <code>WindowLimiter</code>, mutes, env config and logging, MySQL and the migration runner)</td>
+</tr>
+</tbody>
+</table>
+<p>Messages: <a href="protocol.html">Protocol</a>. Running it: <a href="setup.html">Setup and commands</a>. The client side is the game client's: it connects where <code>world.chatServer</code> (the world's <code>ChatServer</code> message) says.</p>
+</main>
+</div>
+</body>
+</html>

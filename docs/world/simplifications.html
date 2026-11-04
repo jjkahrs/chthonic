@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deliberate simplifications - Chthonic World Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html" class="active">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="deliberate-simplifications">Deliberate simplifications</h1>
+<p>Each is marked <code>// ponytail:</code> in the code with its limit and upgrade path:</p>
+<ul>
+<li><strong>One database writer per realm:</strong> character limits are checked with count-then-insert on the single DB thread. Several world processes per realm would need <code>SELECT … FOR UPDATE</code>.</li>
+<li><strong>AOI touched cells:</strong> the re-bucket after Lua touches the cells of that tick's player movers again, so their
+  neighbours recompute once more on the next tick (with the same result). A separate Lua-moved tag if that shows in a profile.</li>
+<li><strong>Tiles never unload:</strong> a tile that has loaded its spawns keeps them for the life of the process, as in AzerothCore
+  master; sleeping NPCs cost memory, not ticks. Despawn idle tiles on a timer if memory ever matters.</li>
+<li><strong>A map context starts inside a tick:</strong> its Lua state loads (about 30 ms with the sample <code>lua/</code>) at the serial point
+  of its first use, so that tick is late. Start every map's context with the scripts if that hitch matters.</li>
+<li><strong>One map, one thread:</strong> with <code>MAP_THREADS</code> &gt; 1 the map contexts update at once
+  (<a href="maps.html#threading">Threading</a>), but a map never splits across threads, so one crowded map is as slow as with 1.</li>
+<li><strong>Held sends are copies:</strong> during a parallel step each message a context sends is copied into the context and encoded on the
+  tick thread after the barrier. Encode on the worker if the tick stats show the serial part growing.</li>
+<li><strong><code>MAX_NPCS</code> in even shares:</strong> before each update step what is left under the limit is split evenly among the map
+  contexts, so with several maps a map can be refused an NPC while another's share is unused (until the next step's split). Weight
+  the shares by use if that ever bites.</li>
+<li><strong>Id blocks:</strong> each map context holds a spare block of entity ids (4096; 256 on an instance copy); a context that makes more than that in one
+  update step takes another block mid-step, which keeps ids unique but no longer the same as with 1 thread. Each context's unused
+  ids stay with it.</li>
+<li><strong>One lock per navmesh:</strong> a path search takes its map's lock (Detour's query keeps its search state); only a
+  <code>chthonic.map.path</code> for another map can wait on it. A query object per context if that shows.</li>
+<li><strong>Finding an entity's context is a scan:</strong> <code>World</code> asks each map context in turn (one per world map in use and one per
+  instance copy) which holds an id, for a session's messages and C++ calls: a hash lookup each. An id-to-context index if thousands of
+  copies live at once.</li>
+<li><strong>Instances live in memory only:</strong> no binds, saved instance state, scheduled resets, difficulties, groups or lockouts
+  (AzerothCore's). A copy is found by its Lua instance key while it lives; a restart (or its empty timeout) loses it, and its players
+  enter at the map's <code>exit</code>. Save the copies' state if a game needs raids that outlive a restart.</li>
+<li><strong>A full copy is checked twice:</strong> <code>chthonic.transfer</code> can return <code>false</code> only for a copy that was full at the last
+  serial point (counting the context's own queued players); one filled since by another context or a login is refused when the
+  transfer is done, after <code>chthonic.transfer</code> returned <code>true</code> (<code>instance.full</code> both times). Reserve the place at the request if
+  a game needs the return value exact.</li>
+<li><strong>Instance ids never wrap:</strong> each run's copies count up from one above the highest saved <code>characters.instance_id</code>,
+  so a saved id names no copy of this run. After 2<sup>32</sup> &minus; 1 copies ever made in a realm no more are made (transfers into a new copy
+  are refused like a full one); reset <code>characters.instance_id</code> to 0 (those players enter at the exits) if a realm ever gets there.</li>
+<li><strong>Layers fill the fullest, with no rebalancing:</strong> an arrival joins the fullest <a href="maps.html#layers">layer</a> with
+  room, and the server never moves players between layers, so layers emptied by logouts stay thin until their last player leaves (and
+  an extra layer closes). There is no player command or client UI to switch layers; a <code>layerFor</code> hook or <code>chthonic.transfer</code>'s
+  <code>layer =</code> is the way. With no new layer possible the player overfills the fullest layer. Merge thin layers (at a loading
+  screen or a portal) if a game needs them full.</li>
+<li><strong>Map contexts never stop:</strong> a world map's context, once started, stays for the life of the process, like its tiles.
+  An instance copy is destroyed once empty for its map's <code>emptyTimeoutSec</code>; its entity ids go back to the pool.</li>
+<li><strong>Every context keeps every spawn record:</strong> each map context has the full list of spawn file entries (a pointer and a
+  timer each), so a spawn index means the same in all of them; it only spawns its own map's.</li>
+<li><strong>Sleeping patrols are swept slowly:</strong> the sample <code>systems/npcs.lua</code> checks 8 patrol entries a tick for NPCs that are gone
+  (a sleeping one is just missing from <code>chthonic.query</code>), so a destroyed patrol's few bytes linger for a while. A destroy event
+  if that ever matters.</li>
+<li><strong>Migration splitter:</strong> splits on <code>;</code> at the end of a line.</li>
+<li><strong>Component replication diff:</strong> only components marked dirty by a writer (<code>chthonic.add</code>, <code>chthonic.set</code>, <code>chthonic.remove</code>, NPC creation, login restore) are compared with the last sent value, and each change is serialized once for all its recipients. A change is still sent as the component's full JSON; delta or binary encoding if bandwidth matters.</li>
+<li><strong>Move bytes:</strong> each player gets one <code>EntityMoves</code> a tick, but at 20 bytes per move the payload is still
+  O(movers &times; viewers). Quantized or delta-encoded entries, or a lower update rate for far viewers, if bandwidth matters.</li>
+<li><strong><code>chthonic.set</code> through JSON:</strong> reuses the definition checks; convert Lua values directly if it shows in profiles.</li>
+<li><strong>No TLS <code>close_notify</code> on disconnect:</strong> peers see EOF.</li>
+<li><strong>Map bounds by rectangle scan:</strong> each bounds check walks a map's tile rectangles. Fine for a handful per map; use a
+  tile set if maps grow many.</li>
+<li><strong>Area overlap check:</strong> an exact test, except that two non-convex polygons with exactly coincident edges and outside
+  centroids can slip through. It compares every pair of areas at load (O(n^2)), which is fine for hundreds per map.</li>
+<li><strong>Load bots park after a portal:</strong> without <code>MAPS</code> they stop moving on the destination map instead of
+  wandering its bounds. With <code>MAPS</code> they walk a straight line to each portal, so the maps must have no obstacle or navmesh
+  edge on the way, and the gates must be clear of the other portals.</li>
+<li><strong>No jump or flying allowance:</strong> <code>MOVE_MAX_AIR</code> is one limit for everyone, and NPCs are always on the ground. A
+  jump arc or flying mounts need a per-entity allowance, and flying NPCs a flag.</li>
+<li><strong>Off the navmesh is corrected at once:</strong> a player cannot fall off a cliff face. A grace period (or an allowance
+  while falling) if drops are wanted.</li>
+<li><strong>Navmesh cell height:</strong> fixed at <code>cellSize / 2</code>; a manifest field if maps need finer vertical steps.</li>
+<li><strong>Map objects block by navmesh only:</strong> the server has no shape collision; an obstacle's whole column under its
+  footprint is cut from the bake, whatever its height. Bridges, overhangs or objects that stop blocking (doors) need the
+  shapes' own y range in the bake and dynamic obstacles (Detour tile cache).</li>
+<li><strong>No interactable state:</strong> the server keeps no cooldown, enabled flag or per-object state, and sends nothing for a
+  rejected <code>Interact</code>; the game's Lua does both if it needs them.</li>
+<li><strong>32-bit poly refs:</strong> 1,024 polygons per tile on a 64 x 64 map (4,096 at 32 x 32); <code>chthonic_mapbake</code> refuses a tile over it. <code>DT_POLYREF64</code> past that.</li>
+<li><strong>Short nav paths:</strong> <code>kMaxNodes</code> 4096, <code>kMaxPathPolys</code> 1024, <code>kMaxPathPoints</code> 256 cap how far one path search reaches on a big map.</li>
+<li><strong>One process owns every tile:</strong> <code>Maps::owns</code> is always true for a loaded tile. Several processes need a refused
+  transfer to save and send <code>Redirect{host, port, ticket}</code> to the owner.</li>
+</ul>
+</main>
+</div>
+</body>
+</html>

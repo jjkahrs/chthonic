@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Persistence - Chthonic World Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html" class="active">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="persistence">Persistence</h1>
+<ul>
+<li><strong>Schema:</strong> characters live in <code>chthonic_world.characters</code> with these fields:<ul>
+<li><code>id</code>, <code>realm_id</code>, <code>account_id</code> (the JWT <code>sub</code>) and <code>name</code></li>
+<li><code>map_id</code> (<code>migrations/003_character_map.sql</code>), <code>pos_x/y/z</code> and <code>heading</code></li>
+<li><code>instance_id</code> (<code>migrations/005_character_instance.sql</code>): the <a href="instances.html#relog">instance copy</a> it was saved in, 0 for none
+  (a world map, or a row from before the migration). Copies are memory-only, so an id that names no live copy of the saved map
+  (destroyed, or from an earlier run) sends the character to the map's <code>exit</code> on entering. At startup the server reads
+  the realm's highest <code>instance_id</code> and numbers new copies above it, so a saved id never names a new copy</li>
+<li><code>options</code> (<code>migrations/004_character_options.sql</code>): the CharCreate options</li>
+<li><code>components</code>: the persisted Lua components (JSON, see "Lua components and systems")</li>
+<li><code>created_at</code>, <code>last_login_at</code> and <code>deleted_at</code></li>
+</ul>
+</li>
+<li><strong>Timestamps:</strong> <code>DATETIME(3)</code> in UTC, written by the application.</li>
+<li><strong>Queries:</strong> every query is a prepared statement scoped by <code>realm_id</code>. Ownership checks use <code>account_id</code>.</li>
+<li><strong>Deleting:</strong> a delete is a soft delete. The name stays reserved, because the unique key <code>(realm_id, name)</code> with <code>ascii_general_ci</code> covers deleted rows too, so the name can't be reused.</li>
+</ul>
+<h2 id="save-and-load-rules">Save and load rules</h2>
+<p>The world never touches MySQL from the game thread (the tick and all message handling) or the net threads. A pool of <code>DB_POOL_SIZE</code> DB worker threads (default 4) does, each with its own connection, connect fail-fast state and pending saves. Results go back to the game thread through <code>asio::post</code>.</p>
+<ul>
+<li><strong>Sharding:</strong> character <code>charId</code> belongs to worker <code>charId % DB_POOL_SIZE</code>. All its saves and its <code>EnterWorld</code> load run on that worker, in order.</li>
+<li><strong>Lobby requests</strong> (character list, create, delete) go into one shared queue that any idle worker takes from.</li>
+<li><strong>Fair interleave:</strong> a worker lands at most 8 of its <em>own</em> due saves, then takes one request (its characters' <code>EnterWorld</code> loads first, then the shared queue), and repeats. A request waits behind at most 8 saves, never behind every pending save in the pool, and a steady stream of requests still lets saves through.</li>
+</ul>
+<ul>
+<li><strong>What a save writes:</strong> <code>map_id</code>, <code>instance_id</code>, the position and heading, and the persisted components when they changed.</li>
+<li><strong>When saves happen:</strong> on logout or disconnect, on a duplicate-login kick, on graceful shutdown, and every <code>SAVE_INTERVAL_MS</code> while the position or a persisted Lua component is dirty.</li>
+<li><strong>Never dropped:</strong><ul>
+<li>A save sits in a pending map keyed by character, where the latest save wins.</li>
+<li>It is retried with exponential backoff (<code>SAVE_RETRY_MIN_MS</code> up to <code>SAVE_RETRY_MAX_MS</code>) until it lands.</li>
+<li>Every failed attempt is logged (<code>save failed, will retry</code>).</li>
+</ul>
+</li>
+<li><strong>Ordering:</strong> <code>EnterWorld</code> runs on the character's own worker and first lands any pending save for that character there, so a load never reads a stale position. Saves for one character never run on two workers, so they land in order.<ul>
+<li><strong>Duplicate login:</strong> the kicked session's save is queued before the new session can ask for anything.</li>
+</ul>
+</li>
+</ul>
+<h2 id="when-mysql-goes-down-at-runtime">When MySQL goes down at runtime</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>New auth handshakes</td>
+<td>Still work: they only need the JWKS</td>
+</tr>
+<tr>
+<td>Character list/create/delete/enter</td>
+<td><code>CharError{service_unavailable}</code>, within <code>DB_CONNECT_TIMEOUT_SECONDS</code> at worst. After a failed connect, that worker answers immediately for 1 s instead of reconnecting</td>
+</tr>
+<tr>
+<td>Players in the world</td>
+<td>Keep moving, chatting and replicating, because the tick never waits on the DB</td>
+</tr>
+<tr>
+<td>Saves</td>
+<td>Retried with backoff. They land after MySQL comes back. <code>tick stats</code> logs show <code>saves_pending</code> and <code>saves_failed_attempts</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="graceful-shutdown">Graceful shutdown</h2>
+<p>SIGTERM, SIGINT or Ctrl+C starts the shutdown:</p>
+<ol>
+<li>The server stops accepting connections and logs <code>tick stats total</code>.</li>
+<li>Lua: <code>onLeave</code> runs for every character, then every system's <code>shutdown</code>.</li>
+<li>Every character in the world is despawned and saved, and every client gets <code>Disconnect{server_shutdown}</code>. Then every NPC is removed, with nothing sent or saved.</li>
+<li>Once every client's connection has closed (each net thread writes its clients' <code>Disconnect</code> first; at most 3 s), the net threads are stopped and joined.</li>
+<li>Once the clients are gone, queued requests are dropped and each DB worker flushes its own pending saves, ignoring backoff, until <code>SHUTDOWN_TIMEOUT_MS - 500 ms</code>. The unsaved count is the sum over the workers.</li>
+<li>The process exits 0, or 1 if any save could not be flushed.</li>
+</ol>
+<p>Compose gives the container a <code>stop_grace_period</code> of 15 s.</p>
+</main>
+</div>
+</body>
+</html>

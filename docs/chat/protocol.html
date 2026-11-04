@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Protocol - Chthonic Chat Service</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="../world/index.html">World Server</a><a href="index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Chat Service</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="tests.html">Tests</a></li><li><a href="protocol.html" class="active">Protocol</a></li></ul></nav>
+<main>
+<h1 id="protocol">Chat service protocol</h1>
+<p>The chat service speaks the world server's protocol (version 9, <code>world/protocol/messages.h</code>): the same frames (<code>u16</code> payload length, <code>u16</code> opcode, little-endian payload), strings, handshake and heartbeat; see the <a href="../world/protocol.html">world protocol</a> for those. Every message below is in <a href="../world/protocol.html#messages">its message table</a> too.</p>
+<h2 id="client">Game client connection (<code>CHAT_PORT</code>, 7778)</h2>
+<pre><code>client                                   chat service
+  |---- TLS ---------------------------------&gt;|
+  |---- Hello{8}, Auth{accessToken} ----------&gt;|  JWKS verify; held until the account's character
+  |                                            |  is online (CHAT_BIND_TIMEOUT_MS), else no_character
+  |&lt;--- AuthOk{accountId, role} ----------------|
+  |&lt;--- ChatChannel{1, General, joined} --------|
+  |---- ChatSend / ChatJoin / ChatLeave / ------&gt;|
+  |     ChatIgnore / ChatMute                  |
+  |&lt;--- ChatLine / ChatChannel / ChatNotice -----|</code></pre>
+<table>
+<thead>
+<tr><th>Opcode</th><th>Name</th><th>Dir</th><th>Payload</th></tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0x0001</code></td>
+<td>Hello</td>
+<td>C</td>
+<td><code>u16 protocolVersion</code> (8)</td>
+</tr>
+<tr>
+<td><code>0x0002</code></td>
+<td>Auth</td>
+<td>C</td>
+<td><code>str accessToken</code>, the same as for the world server</td>
+</tr>
+<tr>
+<td><code>0x0102</code></td>
+<td>AuthOk</td>
+<td>S</td>
+<td><code>u64 accountId, u8 role</code>: bound to the account's online character</td>
+</tr>
+<tr>
+<td><code>0x0103</code></td>
+<td>Disconnect</td>
+<td>S</td>
+<td><code>u16 reason</code> (<a href="../world/protocol.html#codes">codes</a>; <code>no_character</code> 26 is the chat service's)</td>
+</tr>
+<tr>
+<td><code>0x0003</code> / <code>0x0004</code></td>
+<td>Ping / Pong</td>
+<td>C/S</td>
+<td><code>u32 nonce</code></td>
+</tr>
+<tr>
+<td><code>0x0030</code></td>
+<td>ChatSend</td>
+<td>C</td>
+<td><code>u8 target</code> (0 whisper, 1 channel, 2 zone), <code>str to</code> (a character name, a channel name, empty for zone), <code>str text</code></td>
+</tr>
+<tr>
+<td><code>0x0031</code></td>
+<td>ChatJoin</td>
+<td>C</td>
+<td><code>str channel</code> (a <code>CHAT_CHANNELS</code> name, any case)</td>
+</tr>
+<tr>
+<td><code>0x0032</code></td>
+<td>ChatLeave</td>
+<td>C</td>
+<td><code>str channel</code></td>
+</tr>
+<tr>
+<td><code>0x0033</code></td>
+<td>ChatIgnore</td>
+<td>C</td>
+<td><code>str name, u8 on</code> (1 ignore, 0 unignore)</td>
+</tr>
+<tr>
+<td><code>0x0034</code></td>
+<td>ChatMute</td>
+<td>C</td>
+<td><code>str name, u32 minutes</code> (0: unmute). GM / admin only</td>
+</tr>
+<tr>
+<td><code>0x0130</code></td>
+<td>ChatLine</td>
+<td>S</td>
+<td><code>u8 target</code> (0 whisper, 1 channel, 2 zone, 3 whisper_sent), <code>str channel</code> (channel lines), <code>str name</code> (the sender; the recipient for whisper_sent), <code>str text</code></td>
+</tr>
+<tr>
+<td><code>0x0131</code></td>
+<td>ChatChannel</td>
+<td>S</td>
+<td><code>u8 number, str channel, u8 joined</code>: membership changed (number = place in <code>CHAT_CHANNELS</code>, from 1)</td>
+</tr>
+<tr>
+<td><code>0x0132</code></td>
+<td>ChatNotice</td>
+<td>S</td>
+<td><code>u8 code, str name, u32 minutes</code>: see <a href="#notices">Notices</a></td>
+</tr>
+<tr>
+<td><code>0x012A</code></td>
+<td>ChatServer</td>
+<td>S (world)</td>
+<td><code>str host, u16 port</code>: the world server says where this service is, right after <code>EnterWorldOk</code></td>
+</tr>
+<tr>
+<td><code>0x0124</code></td>
+<td>ChatMsg</td>
+<td>S (world)</td>
+<td><code>u8 kind, str fromName, str text</code>: proximity chat (say, yell, emote) stays on the world server</td>
+</tr>
+</tbody>
+</table>
+<h3 id="rules">Rules</h3>
+<ul>
+<li><strong>Whisper:</strong> to a character name, any case, on any map of any linked world. The sender gets <code>ChatLine{whisper_sent, "", recipient, text}</code> first, the recipient <code>ChatLine{whisper, "", sender, text}</code>. No chat connection: <code>not_online</code>.</li>
+<li><strong>Channels:</strong> the <code>CHAT_CHANNELS</code> list only, numbered from 1 in config order (<code>/1 /2 /3</code> = General, Trade, LFG by default). Every connect puts the client in the first again; the others are the client's to rejoin. A channel line goes to every member, the sender included.</li>
+<li><strong>Zone:</strong> every connected character on the sender's map (as the world server last reported it), the sender included.</li>
+<li><strong>Ignore:</strong> a recipient that ignores the sender gets none of its whispers, channel or zone lines; the sender is not told.</li>
+<li><strong>Order of checks for a <code>ChatSend</code>:</strong> rate limit, then text (<code>sanitize_chat</code>), then mute, then the target.</li>
+<li><strong>Unexpected:</strong> any other message after <code>AuthOk</code>, or a chat message before it, is <code>Disconnect{unexpected_message}</code>.</li>
+</ul>
+<h3 id="notices">Notices</h3>
+<p><code>ChatNotice.code</code>. "error" ones are a request refused or a message dropped (a client's <code>chat.error</code>), "notice" ones confirmations (<code>chat.notice</code>).</p>
+<table>
+<thead>
+<tr><th>Value</th><th>Name</th><th>Kind</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>not_online</code></td>
+<td>error</td>
+<td>Whisper: no character of that name has a chat connection (<code>name</code>)</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>muted</code></td>
+<td>error</td>
+<td>You are muted: the message was dropped (<code>minutes</code> left). The world server sends it too, for a say, yell or emote</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>not_allowed</code></td>
+<td>error</td>
+<td>Mute / unmute: GM or admin only</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>no_channel</code></td>
+<td>error</td>
+<td>No such channel (<code>name</code>)</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>not_in_channel</code></td>
+<td>error</td>
+<td>Send to / leave a channel you are not in (<code>name</code>)</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>rate_limited</code></td>
+<td>error</td>
+<td>Over <code>CHAT_RATE_COUNT</code> per <code>CHAT_RATE_WINDOW_MS</code>: dropped</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>rejected</code></td>
+<td>error</td>
+<td>Empty, over <code>CHAT_MAX_BYTES</code>, or not valid UTF-8: dropped</td>
+</tr>
+<tr>
+<td>8</td>
+<td><code>bad_name</code></td>
+<td>error</td>
+<td>Not a character name (3-16 letters) (<code>name</code>)</td>
+</tr>
+<tr>
+<td>9</td>
+<td><code>ignored</code></td>
+<td>notice</td>
+<td>Ignore done (<code>name</code>)</td>
+</tr>
+<tr>
+<td>10</td>
+<td><code>unignored</code></td>
+<td>notice</td>
+<td>Unignore done (<code>name</code>)</td>
+</tr>
+<tr>
+<td>11</td>
+<td><code>mute_set</code></td>
+<td>notice</td>
+<td>To the GM: <code>name</code> muted for <code>minutes</code></td>
+</tr>
+<tr>
+<td>12</td>
+<td><code>mute_cleared</code></td>
+<td>notice</td>
+<td>To the GM: <code>name</code> unmuted</td>
+</tr>
+<tr>
+<td>13</td>
+<td><code>you_muted</code></td>
+<td>notice</td>
+<td>To the muted character: for <code>minutes</code></td>
+</tr>
+<tr>
+<td>14</td>
+<td><code>you_unmuted</code></td>
+<td>notice</td>
+<td>To the unmuted character</td>
+</tr>
+</tbody>
+</table>
+<h2 id="link">Internal link (<code>CHAT_LINK_PORT</code>, 7779)</h2>
+<p>Each world server connects (TLS, it verifies the chat service's certificate) and keeps the link up with backoff. Several world servers may link at once.</p>
+<table>
+<thead>
+<tr><th>Opcode</th><th>Name</th><th>Dir</th><th>Payload</th></tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0x0200</code></td>
+<td>LinkHello</td>
+<td>world &rarr; chat</td>
+<td><code>u16 protocolVersion, str secret</code> (<code>CHAT_LINK_SECRET</code>); first</td>
+</tr>
+<tr>
+<td><code>0x0201</code></td>
+<td>LinkOk</td>
+<td>chat &rarr; world</td>
+<td>(empty); then a <code>MuteState</code> per running mute</td>
+</tr>
+<tr>
+<td><code>0x0202</code></td>
+<td>CharOnline</td>
+<td>world &rarr; chat</td>
+<td><code>u64 accountId, u64 charId, str name, u16 map</code>: entered the world; after <code>LinkOk</code>, one per character already in it</td>
+</tr>
+<tr>
+<td><code>0x0203</code></td>
+<td>MapChanged</td>
+<td>world &rarr; chat</td>
+<td><code>u64 charId, u16 map</code></td>
+</tr>
+<tr>
+<td><code>0x0204</code></td>
+<td>CharOffline</td>
+<td>world &rarr; chat</td>
+<td><code>u64 charId</code>: left the world (logout, disconnect, duplicate login)</td>
+</tr>
+<tr>
+<td><code>0x0205</code></td>
+<td>MuteState</td>
+<td>chat &rarr; world</td>
+<td><code>str name, u64 untilMs</code> (Unix ms, wall clock; 0: not muted)</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Re-sync:</strong> on every (re)connect the chat service sends every running mute, and the world server every character it has in the world. The world server clears its mutes on <code>LinkOk</code> first.</li>
+<li><strong>Link lost:</strong> the chat service takes that world's characters offline and closes their chat connections (<code>no_character</code>); their clients reconnect once the world has linked again.</li>
+</ul>
+</main>
+</div>
+</body>
+</html>

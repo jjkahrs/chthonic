@@ -1,0 +1,2 @@
+{"version": 1, "id": 1, "name": "Torn", "tiles": [[0, 0, 1, 0]], "heightRange": [0, 100],
+ "spawn": {"pos": [10, 0, 10]}}

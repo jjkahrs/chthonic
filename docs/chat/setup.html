@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setup and commands - Chthonic Chat Service</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="../world/index.html">World Server</a><a href="index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Chat Service</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html" class="active">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="tests.html">Tests</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="setup">Setup and commands</h1>
+<h2 id="compose">With the world stack (docker compose)</h2>
+<p>The chat service is part of the <code>world</code> compose stack. In <code>world/.env</code> (from <code>.env.example</code>) set <code>CHAT_LINK_SECRET</code> (16+ characters) and <code>CHAT_DB_PASSWORD</code>, then:</p>
+<pre><code>cd world
+docker compose up -d --build        # world, chat, auth, mysql, mailpit
+docker compose logs chat            # "migrations done", "mutes loaded", "listening", then "world link up"
+docker compose restart chat         # mutes survive it (MySQL)</code></pre>
+<ul>
+<li><strong>Image:</strong> <code>chthonic-chat:dev</code>, built from the repository root with <code>chat/Dockerfile</code> (it compiles <code>world/protocol</code> and the shared server code). Its dependency layer is the world image's, so Docker reuses it.</li>
+<li><strong>Database:</strong> the one-shot service <code>chat-db-init</code> creates <code>chthonic_chat</code> and its user on every start (fresh or existing MySQL volume); the chat service runs its own migrations.</li>
+<li><strong>Ports:</strong> <code>7778</code> for game clients (published as <code>CHAT_HOST_PORT</code>); <code>7779</code>, the internal link, stays inside the compose network.</li>
+<li><strong>TLS:</strong> the chat service uses the world server's dev certificate (the <code>world-certs</code> volume, read-only), whose names include <code>chat</code>, so a client trusts one CA file for both. It starts after the world server is healthy (which makes the certificate). A dev certificate from before it named <code>chat</code> is made again by the world server: copy it to clients again.</li>
+<li><strong>World server settings:</strong> the compose file sets the world's <code>CHAT_PUBLIC_HOST</code> (default <code>127.0.0.1</code>, the host's view), <code>CHAT_PUBLIC_PORT</code>, <code>CHAT_LINK_HOST=chat</code> and the secret.</li>
+</ul>
+<h2 id="build">Build and test on Windows</h2>
+<pre><code>cd chat
+cmake --preset debug &amp;&amp; cmake --build --preset debug
+ctest --preset debug                # chat_self_check</code></pre>
+<p>Same toolchain as the world server (VS 2022, <code>VCPKG_ROOT</code>, presets <code>debug</code> / <code>release</code>; <code>linux-release</code> in the image).</p>
+<h2 id="run">Run outside docker</h2>
+<pre><code>cd chat
+cp .env.example .env                # set CHAT_LINK_SECRET and the database; every variable: Configuration
+build/debug/chthonic_chat.exe           # reads the environment (load .env yourself)</code></pre>
+<p>Point a world server at it with <code>CHAT_LINK_HOST</code> / <code>CHAT_LINK_PORT</code> / <code>CHAT_LINK_SECRET</code> and tell clients where it is with <code>CHAT_PUBLIC_HOST</code> / <code>CHAT_PUBLIC_PORT</code> (<a href="../world/configuration.html">world configuration</a>).</p>
+<h2 id="logs">Logs</h2>
+<p>JSON lines on stdout, like the world server's: <code>listening</code>, <code>world link up</code> / <code>world link down</code>, <code>chat client bound</code>, <code>auth rejected</code>, <code>no character online for the account</code>, <code>muted</code> / <code>unmuted</code> <code>{name, minutes, by}</code>, <code>mute refused: not a GM</code>, <code>mutes expired</code>. Chat text never appears at info level or above.</p>
+</main>
+</div>
+</body>
+</html>

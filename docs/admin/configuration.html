@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Configuration - Chthonic Admin App</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="../world/index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Admin App</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html" class="active">Configuration</a></li><li><a href="permissions.html">Permissions</a></li><li><a href="endpoints.html">Endpoints</a></li><li><a href="security.html">Security behaviour</a></li></ul></nav>
+<main>
+<h1 id="configuration">Configuration</h1>
+<p>All configuration comes from environment variables (<code>.env</code> for the <code>npm</code> scripts; see <code>admin/.env.example</code>). They are validated with zod at startup, and the process exits listing every bad or missing variable.</p>
+<table>
+<thead>
+<tr><th>Variable</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>PORT</code></td><td><code>3200</code></td><td>HTTP port (API and SPA)</td></tr>
+<tr><td><code>TRUST_PROXY</code></td><td><code>false</code></td><td>Express <code>trust proxy</code> (<code>true</code>, a hop count, or subnets)</td></tr>
+<tr><td><code>COOKIE_SECURE</code></td><td><code>true</code></td><td>Session and CSRF cookies are <code>Secure</code>. <code>false</code> only for plain-http development (compose sets it, on localhost)</td></tr>
+<tr><td><code>STATIC_DIR</code></td><td><code>web/dist</code></td><td>The built SPA</td></tr>
+<tr><td><code>AUTH_URL</code></td><td>required</td><td>Auth service base URL (compose: <code>http://auth:3000</code>). Its JWKS verifies access tokens</td></tr>
+<tr><td><code>JWT_ISSUER</code> / <code>JWT_AUDIENCE</code></td><td>required</td><td>Must match auth's</td></tr>
+<tr><td><code>DB_HOST</code> / <code>DB_PORT</code></td><td>required / <code>3306</code></td><td>MySQL holding both databases</td></tr>
+<tr><td><code>ADMIN_DB_USER</code> / <code>ADMIN_DB_PASSWORD</code> / <code>ADMIN_DB_NAME</code></td><td>required</td><td>Owns <code>chthonic_admin</code> (audit log, realm endpoint copy) only</td></tr>
+<tr><td><code>WORLD_DB_USER</code> / <code>WORLD_DB_PASSWORD</code> / <code>WORLD_DB_NAME</code></td><td>required</td><td><code>SELECT</code> and <code>UPDATE</code> on <code>chthonic_world.characters</code> only</td></tr>
+<tr><td><code>WORLD_ADMIN_SECRET</code></td><td>required, 16+ characters</td><td>The world servers' <code>WORLD_ADMIN_SECRET</code>. Never logged, stored or returned</td></tr>
+<tr><td><code>WORLD_ADMIN_CA_FILE</code></td><td>system CAs</td><td>PEM CA for the world servers' TLS certificates (compose: the world dev cert, <code>/certs/server.crt</code>)</td></tr>
+<tr><td><code>WORLD_ADMIN_TIMEOUT_MS</code></td><td><code>3000</code></td><td>Connect + reply timeout per admin-port request; past it the realm counts as unreachable</td></tr>
+<tr><td><code>TEST_MYSQL_ROOT_PASSWORD</code>, <code>TEST_ADMIN_DB_NAME</code>, <code>TEST_WORLD_DB_NAME</code></td><td>-</td><td><code>npm test</code> only</td></tr>
+</tbody>
+</table>
+<h2 id="compose">World compose stack</h2>
+<p><code>world/.env</code> (see its <code>.env.example</code>) adds these for the admin app; the compose file sets the rest (<code>AUTH_URL</code>, <code>DB_HOST</code>, the CA path, <code>COOKIE_SECURE=false</code>).</p>
+<table>
+<thead>
+<tr><th>Variable</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>ADMIN_HOST_PORT</code></td><td><code>3200</code></td><td>Host port, bound to <code>127.0.0.1</code></td></tr>
+<tr><td><code>ADMIN_DB_PASSWORD</code></td><td>required</td><td>Password of the <code>chthonic_admin</code> user (<code>ADMIN_DB_USER</code>, default <code>chthonic_admin</code>)</td></tr>
+<tr><td><code>ADMIN_WORLD_DB_PASSWORD</code></td><td>required</td><td>Password of the characters-only world user (<code>ADMIN_WORLD_DB_USER</code>, default <code>chthonic_world_admin</code>)</td></tr>
+<tr><td><code>WORLD_ADMIN_SECRET</code></td><td>empty = admin port off</td><td>Shared by the world and the admin service. Empty also keeps the admin service from starting</td></tr>
+<tr><td><code>SEED_ADMIN_EMAIL</code> / <code>SEED_ADMIN_PASSWORD</code></td><td>empty</td><td>Passed to auth, which creates this pre-verified admin on start if the email is unused (both or neither)</td></tr>
+</tbody>
+</table>
+<p><code>admin-db-init</code> creates users with <code>CREATE USER IF NOT EXISTS</code>: changing a password in <code>.env</code> later does not change an existing user. Use <code>ALTER USER</code> as MySQL root, or a fresh volume.</p>
+<h2 id="realm-admin-endpoint">Realm admin endpoint</h2>
+<p>Each realm in auth has optional <code>adminHost</code> / <code>adminPort</code> (Realms page): where the admin service reaches that realm's world admin port. A realm without them is <em>unreachable</em>: online list, kick and non-forced character writes answer <code>503 realm_unreachable</code>.</p>
+</main>
+</div>
+</body>
+</html>

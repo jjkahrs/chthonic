@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Configuration - Chthonic World Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html" class="active">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="configuration">Configuration</h1>
+<ul>
+<li><strong>Source:</strong> every setting comes from an environment variable, validated at startup.</li>
+<li><strong>Invalid values:</strong> the server lists every bad or missing variable and exits with status 1.</li>
+<li><strong>Env files:</strong> <code>.env.example</code> is committed; <code>.env</code> is gitignored.</li>
+<li><strong>Compose overrides:</strong> in compose, <code>DB_HOST</code>, <code>DB_PORT</code>, <code>AUTH_JWKS_URL</code>, <code>WORLD_PORT</code>, <code>TLS_DEV_CERT_DIR</code>, <code>MIGRATIONS_DIR</code>, <code>LUA_ROOT</code> and <code>MAP_ROOT</code> are overridden with in-network values. <code>GAME_STATE_MACHINES</code> defaults to the sample's <code>zone_cycle</code> unless <code>.env</code> sets it.</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>REALM_ID</code></td>
+<td><strong>required</strong></td>
+<td>Should match <code>realms.id</code> in auth (not checked). Every character row is keyed by it</td>
+</tr>
+<tr>
+<td><code>WORLD_HOST</code></td>
+<td><code>0.0.0.0</code></td>
+<td>Bind address</td>
+</tr>
+<tr>
+<td><code>WORLD_PORT</code></td>
+<td><code>7777</code></td>
+<td>TLS game port</td>
+</tr>
+<tr>
+<td><code>MAX_CONNECTIONS</code></td>
+<td><code>1000</code></td>
+<td>Beyond this: <code>Disconnect{server_full}</code></td>
+</tr>
+<tr>
+<td><code>MAX_FRAME_BYTES</code></td>
+<td><code>4096</code></td>
+<td>Max frame payload</td>
+</tr>
+<tr>
+<td><code>HANDSHAKE_TIMEOUT_MS</code></td>
+<td><code>10000</code></td>
+<td>TLS + Hello + Auth must finish within this</td>
+</tr>
+<tr>
+<td><code>IDLE_TIMEOUT_MS</code></td>
+<td><code>60000</code></td>
+<td>Nothing received for this long: <code>idle_timeout</code></td>
+</tr>
+<tr>
+<td><code>PING_INTERVAL_MS</code></td>
+<td><code>20000</code></td>
+<td>Server heartbeat <code>Ping</code></td>
+</tr>
+<tr>
+<td><code>MSG_RATE_PER_SEC</code></td>
+<td><code>60</code></td>
+<td>Per-connection message rate</td>
+</tr>
+<tr>
+<td><code>MSG_BURST</code></td>
+<td><code>120</code></td>
+<td>Token-bucket burst</td>
+</tr>
+<tr>
+<td><code>MSG_RATE_GRACE_MS</code></td>
+<td><code>2000</code></td>
+<td>Continuous excess for this long: <code>rate_limited</code></td>
+</tr>
+<tr>
+<td><code>MAX_SEND_BUFFER_BYTES</code></td>
+<td><code>1048576</code></td>
+<td>A client that stops reading is dropped past this</td>
+</tr>
+<tr>
+<td><code>NET_THREADS</code></td>
+<td><code>4</code></td>
+<td>Net threads, 1&ndash;64: TLS, framing, rate limits and socket I/O for every connection (game clients, admin port, chat link), each connection on one of them (round-robin at connect). The tick and all game logic run on one separate game thread, also with 1. The startup line <code>threads</code> shows it; <code>net stats</code> shows how busy each one is (<a href="operations.html#net-stats">Operations</a>)</td>
+</tr>
+<tr>
+<td><code>TLS_CERT_FILE</code> / <code>TLS_KEY_FILE</code></td>
+<td><em>(empty)</em></td>
+<td>PEM certificate chain and key. Set both, or neither for the dev cert</td>
+</tr>
+<tr>
+<td><code>TLS_DEV_CERT_DIR</code></td>
+<td><code>./certs</code></td>
+<td>Dev cert (<code>server.crt</code>/<code>server.key</code>, EC P-256, SANs localhost/world/127.0.0.1), generated on first start and reused after. Gitignored</td>
+</tr>
+<tr>
+<td><code>AUTH_JWKS_URL</code></td>
+<td><strong>required</strong></td>
+<td>e.g. <code>http://auth:3000/.well-known/jwks.json</code></td>
+</tr>
+<tr>
+<td><code>JWT_ISSUER</code></td>
+<td><code>chthonic-auth</code></td>
+<td>Must equal auth's <code>JWT_ISSUER</code></td>
+</tr>
+<tr>
+<td><code>JWT_AUDIENCE</code></td>
+<td><code>chthonic</code></td>
+<td>Must equal auth's <code>JWT_AUDIENCE</code></td>
+</tr>
+<tr>
+<td><code>JWT_CLOCK_SKEW_SECONDS</code></td>
+<td><code>5</code></td>
+<td>Leeway on <code>exp</code></td>
+</tr>
+<tr>
+<td><code>JWKS_REFRESH_SECONDS</code></td>
+<td><code>300</code></td>
+<td>Matches auth's <code>max-age=300</code></td>
+</tr>
+<tr>
+<td><code>JWKS_MIN_REFETCH_SECONDS</code></td>
+<td><code>10</code></td>
+<td>An unknown <code>kid</code> refetches the JWKS at most this often</td>
+</tr>
+<tr>
+<td><code>JWKS_TIMEOUT_MS</code></td>
+<td><code>3000</code></td>
+<td>JWKS HTTP connect/read timeout</td>
+</tr>
+<tr>
+<td><code>DB_HOST</code></td>
+<td><strong>required</strong></td>
+<td></td>
+</tr>
+<tr>
+<td><code>DB_PORT</code></td>
+<td><code>3306</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>DB_USER</code> / <code>DB_PASSWORD</code> / <code>DB_NAME</code></td>
+<td><strong>required</strong></td>
+<td>World database (<code>chthonic_world</code>), never auth's</td>
+</tr>
+<tr>
+<td><code>DB_CONNECT_TIMEOUT_SECONDS</code></td>
+<td><code>3</code></td>
+<td>Reads and writes time out after 5 s</td>
+</tr>
+<tr>
+<td><code>DB_POOL_SIZE</code></td>
+<td><code>4</code></td>
+<td>DB worker threads, one MySQL connection each, 1&ndash;32 (<a href="persistence.html#save-and-load-rules">Persistence</a>). The startup log line <code>database pool started</code> shows it</td>
+</tr>
+<tr>
+<td><code>MIGRATIONS_DIR</code></td>
+<td><code>./migrations</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>TICK_HZ</code></td>
+<td><code>20</code></td>
+<td>Fixed simulation rate</td>
+</tr>
+<tr>
+<td><code>MAP_ROOT</code></td>
+<td><code>/app/maps</code></td>
+<td>Folder with one <code>&lt;folder&gt;/map.json</code> per map (see "Maps"). A bad manifest, a duplicate id or no maps refuses the start. <code>.env.example</code> sets <code>./maps</code>; compose mounts <code>MAPS_DIR</code> at <code>/app/maps</code></td>
+</tr>
+<tr>
+<td><code>START_MAP</code></td>
+<td><code>1</code></td>
+<td>Map id new characters start on, at its <code>spawn</code>; also where a character whose saved map is gone goes. Must be loaded, and a world map (an <a href="instances.html">instance map</a> refuses the start)</td>
+</tr>
+<tr>
+<td><code>MIN_Y</code> / <code>MAX_Y</code></td>
+<td><code>-100</code> / <code>500</code></td>
+<td>y is checked against the ground (see "Ground"), then clamped to this range</td>
+</tr>
+<tr>
+<td><code>MAX_SPEED</code></td>
+<td><code>10</code></td>
+<td>m/s on x/z</td>
+</tr>
+<tr>
+<td><code>SPEED_TOLERANCE</code></td>
+<td><code>1</code></td>
+<td>m/s on top of <code>MAX_SPEED</code></td>
+</tr>
+<tr>
+<td><code>MOVE_BURST_SECONDS</code></td>
+<td><code>1</code></td>
+<td>Movement budget cap, in seconds of travel. Absorbs jitter</td>
+</tr>
+<tr>
+<td><code>MOVE_GROUND_TOLERANCE</code></td>
+<td><code>0.5</code></td>
+<td>Metres a move may end below the ground as-is; deeper is lifted onto it (see "Ground")</td>
+</tr>
+<tr>
+<td><code>MOVE_MAX_AIR</code></td>
+<td><code>6</code></td>
+<td>Metres above the ground a move may not rise past or hover at; falling is always allowed (see "Ground")</td>
+</tr>
+<tr>
+<td><code>MOVE_NAV_CHECK</code></td>
+<td><code>1</code></td>
+<td><code>1</code>: a move must end on the map's navmesh, if it has navtiles (see "Navmesh"); <code>0</code>: no navmesh check</td>
+</tr>
+<tr>
+<td><code>AOI_CELL_SIZE</code></td>
+<td><code>64</code></td>
+<td>Interest grid cell, in metres. Must divide the 256 m tile size</td>
+</tr>
+<tr>
+<td><code>AOI_VIEW_RADIUS</code></td>
+<td><code>128</code></td>
+<td>Players within this distance see each other and the NPCs</td>
+</tr>
+<tr>
+<td><code>MAX_CHARS_PER_ACCOUNT</code></td>
+<td><code>10</code></td>
+<td>Live characters per account per realm</td>
+</tr>
+<tr>
+<td><code>MAX_NPCS</code></td>
+<td><code>10000</code></td>
+<td>NPCs in the world (all maps) at once, 0–100000. <code>chthonic.create</code> past it raises an error</td>
+</tr>
+<tr>
+<td><code>ACTIVATION_TILES</code></td>
+<td><code>1</code></td>
+<td>Tiles around a player's tile (Chebyshev distance, 1–32) whose spawn files load and whose NPCs stay awake (<a href="maps.html#tile-activation">tile activation</a>). 1 is a 3&times;3 block; 0, a negative or not a whole number refuses the start</td>
+</tr>
+<tr>
+<td><code>MAP_THREADS</code></td>
+<td><code>1</code></td>
+<td>Worker threads that update the map contexts at once, 1–256 (<a href="maps.html#threading">Threading</a>). 1: no workers, every map on the tick thread. Same results with any value; it pays when players are spread over several maps (<a href="operations.html#map-threads">choosing it</a>). 0, a negative or not a whole number refuses the start</td>
+</tr>
+<tr>
+<td><code>CHAT_MAX_BYTES</code></td>
+<td><code>256</code></td>
+<td>UTF-8 bytes per <code>Say</code></td>
+</tr>
+<tr>
+<td><code>CHAT_RATE_COUNT</code> / <code>CHAT_RATE_WINDOW_MS</code></td>
+<td><code>5</code> / <code>10000</code></td>
+<td>Say rate limit (say, yell and emote together)</td>
+</tr>
+<tr>
+<td><code>CHAT_YELL_RADIUS</code></td>
+<td><code>300</code></td>
+<td>m (x/z) a yell reaches on the yeller's map; may exceed <code>AOI_VIEW_RADIUS</code> (protocol: <a href="protocol.html#proximity-chat">proximity chat</a>)</td>
+</tr>
+<tr>
+<td><code>CHAT_PUBLIC_HOST</code> / <code>CHAT_PUBLIC_PORT</code></td>
+<td>(empty) / <code>7778</code></td>
+<td>Where clients find the realm's <a href="../chat/index.html">chat service</a>: sent as <code>ChatServer</code> after <code>EnterWorldOk</code>. Empty host: not announced (no whispers or channels for the clients)</td>
+</tr>
+<tr>
+<td><code>CHAT_LINK_HOST</code> / <code>CHAT_LINK_PORT</code></td>
+<td>(empty) / <code>7779</code></td>
+<td>The chat service's internal link port. Empty host: no link (the chat service never learns who is online, and no mutes reach this server)</td>
+</tr>
+<tr>
+<td><code>CHAT_LINK_SECRET</code></td>
+<td>(required with <code>CHAT_LINK_HOST</code>)</td>
+<td>Shared secret, at least 16 characters; the same as the chat service's <code>CHAT_LINK_SECRET</code>. Never logged</td>
+</tr>
+<tr>
+<td><code>CHAT_LINK_CA_FILE</code></td>
+<td>(empty)</td>
+<td>PEM the chat service's certificate must chain to (its name must be <code>CHAT_LINK_HOST</code>). Empty: this server's own certificate (<code>TLS_CERT_FILE</code>, or the dev one), which the dev compose stack shares with the chat service</td>
+</tr>
+<tr>
+<td><code>CHAT_LINK_RETRY_MIN_MS</code> / <code>CHAT_LINK_RETRY_MAX_MS</code></td>
+<td><code>500</code> / <code>30000</code></td>
+<td>Reconnect backoff of the link (doubling). The world runs normally while the link is down</td>
+</tr>
+<tr>
+<td><code>WORLD_ADMIN_SECRET</code></td>
+<td>(empty)</td>
+<td>Turns on the <a href="protocol.html#admin">admin port</a> (online list, kick) for the admin service: shared secret, at least 16 characters, the same as the admin service's. Unset or empty: no admin listener, and <code>admin port off: WORLD_ADMIN_SECRET is not set</code> is logged at startup. Never logged (<a href="security.html#admin-port">security</a>)</td>
+</tr>
+<tr>
+<td><code>WORLD_ADMIN_HOST</code> / <code>WORLD_ADMIN_PORT</code></td>
+<td><code>127.0.0.1</code> / <code>7780</code></td>
+<td>Bind address and port of the admin listener (TLS, the server's own certificate). The default only takes local connections; the compose stack sets <code>0.0.0.0</code> so the admin service reaches it on the compose network, and does not publish the port. Never expose it publicly</td>
+</tr>
+<tr>
+<td><code>SIM_LATENCY_MS</code> / <code>SIM_JITTER_MS</code></td>
+<td><code>0</code> / <code>0</code></td>
+<td>Testing only: the lag simulator holds every message both ways latency &plusmn; jitter ms, in order (0 = off); logged as a warning at startup</td>
+</tr>
+<tr>
+<td><code>SAVE_INTERVAL_MS</code></td>
+<td><code>60000</code></td>
+<td>Periodic save of characters whose position changed</td>
+</tr>
+<tr>
+<td><code>SAVE_RETRY_MIN_MS</code> / <code>SAVE_RETRY_MAX_MS</code></td>
+<td><code>500</code> / <code>30000</code></td>
+<td>Exponential backoff for failed saves</td>
+</tr>
+<tr>
+<td><code>SHUTDOWN_TIMEOUT_MS</code></td>
+<td><code>10000</code></td>
+<td>Graceful-shutdown budget, from the signal to exit</td>
+</tr>
+<tr>
+<td><code>TICK_STATS_INTERVAL_SECONDS</code></td>
+<td><code>10</code></td>
+<td>How often tick p50/p99/max is logged</td>
+</tr>
+<tr>
+<td><code>LUA_ROOT</code></td>
+<td><code>/app/lua</code></td>
+<td>Folder with <code>components/</code>, <code>fsms/</code> and <code>systems/</code> (see "Lua components and systems"). Missing or empty: no Lua. <code>.env.example</code> sets <code>./lua</code> for running on the host</td>
+</tr>
+<tr>
+<td><code>GAME_STATE_MACHINES</code></td>
+<td><em>(empty)</em></td>
+<td>Comma-separated names of <code>fsms/</code> definitions to run as game state machines (see "State machines"). Empty or unset: none. A name with no valid definition refuses the start. <code>.env.example</code> and compose set <code>zone_cycle</code></td>
+</tr>
+<tr>
+<td><code>LOG_LEVEL</code></td>
+<td><code>info</code></td>
+<td><code>debug</code>, <code>info</code>, <code>warn</code>, <code>error</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Compose only</strong> (<code>docker-compose.yml</code>, not read by the server):</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MYSQL_ROOT_PASSWORD</code></td>
+<td><strong>required</strong></td>
+<td></td>
+</tr>
+<tr>
+<td><code>AUTH_DB_PASSWORD</code></td>
+<td><strong>required</strong></td>
+<td></td>
+</tr>
+<tr>
+<td><code>AUTH_DB_USER</code> / <code>AUTH_DB_NAME</code></td>
+<td><code>chthonic_auth</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>TEST_DB_NAME</code></td>
+<td><code>chthonic_world_test</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>MAPS_DIR</code></td>
+<td><code>./maps</code></td>
+<td>Compose only: the host folder mounted read-only as the world's and the bot's <code>/app/maps</code>. The default <code>world/maps</code> holds only a minimal flat start map (id 1); point it at a full maps folder (relative to <code>world</code>, or absolute) for the sample-map scenarios (<a href="tests.html#sample-maps">Tests</a>)</td>
+</tr>
+<tr>
+<td><code>WORLD_HOST_PORT</code> / <code>AUTH_HOST_PORT</code> / <code>MYSQL_HOST_PORT</code> / <code>MAILPIT_HOST_PORT</code> / <code>CHAT_HOST_PORT</code></td>
+<td><code>7777</code> / <code>3100</code> / <code>3307</code> / <code>8026</code> / <code>7778</code></td>
+<td><code>CHAT_HOST_PORT</code> is also what the world announces (<code>CHAT_PUBLIC_PORT</code>) in the compose stack</td>
+</tr>
+<tr>
+<td><code>CHAT_DB_PASSWORD</code></td>
+<td>(required)</td>
+<td>The chat service's MySQL user (<code>chthonic_chat</code>, made by the <code>chat-db-init</code> service). The compose file also reads <code>CHAT_LINK_SECRET</code> (both services), <code>CHAT_DB_USER</code>, <code>CHAT_DB_NAME</code>, <code>CHAT_CHANNELS</code> and <code>CHAT_LOG_LEVEL</code>; see <a href="../chat/configuration.html">chat configuration</a></td>
+</tr>
+<tr>
+<td><code>ADMIN_DB_PASSWORD</code> / <code>ADMIN_WORLD_DB_PASSWORD</code></td>
+<td>(required)</td>
+<td>The admin service's MySQL users: <code>chthonic_admin</code> and the characters-only world user <code>chthonic_world_admin</code>; see <a href="../admin/configuration.html">admin configuration</a></td>
+</tr>
+<tr>
+<td><code>ADMIN_HOST_PORT</code></td>
+<td><code>3200</code></td>
+<td>Admin app host port, bound to <code>127.0.0.1</code></td>
+</tr>
+<tr>
+<td><code>SEED_ADMIN_EMAIL</code> / <code>SEED_ADMIN_PASSWORD</code></td>
+<td>empty</td>
+<td>Auth creates this pre-verified admin on start if the email is unused (both or neither)</td>
+</tr>
+</tbody>
+</table>
+</main>
+</div>
+</body>
+</html>

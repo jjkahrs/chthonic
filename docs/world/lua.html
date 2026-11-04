@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lua components and systems - Chthonic World Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html" class="active">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="lua-components-and-systems">Lua components and systems</h1>
+<p>Game developers define data components in Lua and write server-authoritative Lua systems that run on the 20 Hz tick
+and operate on player characters. The component file format is meant to be the game client's too, so a
+game's <code>components/</code> folder can be shared by the client and the server. A client applies whatever the
+server replicates to the matching component on the local player and on remote clones.</p>
+<h2 id="layout">Layout</h2>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>What</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>LUA_ROOT/components/**/*.lua</code></td>
+<td>Component definitions, scanned recursively, one type per file</td>
+</tr>
+<tr>
+<td><code>LUA_ROOT/fsms/**/*.lua</code></td>
+<td>State machine definitions, scanned recursively, one machine per file</td>
+</tr>
+<tr>
+<td><code>LUA_ROOT/items/**/*.lua</code></td>
+<td><a href="#items">Item definitions</a>, scanned recursively, one item per file; a client can read the same files (<code>chthonic.items</code>)</td>
+</tr>
+<tr>
+<td><code>LUA_ROOT/npcs/**/*.lua</code></td>
+<td>NPC definitions, scanned recursively, one NPC type per file; server only (clients never read <code>npcs/</code>)</td>
+</tr>
+<tr>
+<td><code>LUA_ROOT/systems/*.lua</code></td>
+<td>Systems, not recursive, run in alphabetical filename order</td>
+</tr>
+<tr>
+<td>Any other folder</td>
+<td>Read only when a system asks: <a href="#definitions"><code>chthonic.definitions(folder)</code></a>. A dot-folder (<code>.server/quests/</code>)
+keeps game data out of a client build that shares the folder, when that build leaves dot-folders out</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong><code>LUA_ROOT</code>:</strong> defaults to <code>/app/lua</code>. The image ships the sample from <code>world/lua/</code> there, and compose bind-mounts <code>./lua</code> over it.</li>
+<li><strong>Loading:</strong> files are loaded once at startup; there is no hot reload. After an edit, restart the server (<code>docker compose restart world</code>).</li>
+<li><strong>Errors refuse the start:</strong> an invalid component, state machine, item or NPC definition, an invalid system file, a <code>GAME_STATE_MACHINES</code> name with no valid definition, a spawn whose <code>npc</code> has no definition, or an error in a system's <code>init</code> stops the start. The server logs every error, not just the first, one <code>Lua error</code> line each. Each starts with the file path (and <code>path:line</code> for Lua errors); a <code>startup failed: Lua</code> line and exit status 1 follow.</li>
+<li><strong>No Lua is fine:</strong> a missing or empty <code>LUA_ROOT</code> means no custom components, state machines, NPC definitions or systems, with an info log. Spawn files then refuse the start: their <code>npc</code> names no definition.</li>
+</ul>
+<p><strong>Sharing with a game client:</strong> point the bind mount (or <code>LUA_ROOT</code>, when running on the host) at a folder whose <code>components/</code> and <code>fsms/</code> are the game's. For example, change the volume to <code>- /path/to/my-game:/app/lua:ro</code>, which holds <code>components/</code>, <code>fsms/</code>, and the <code>npcs/</code> and <code>systems/</code> folders the client never reads. Client and server then read the same definition files.</p>
+<h2 id="component-definitions">Component definitions</h2>
+<p>The format: <code>return { name, displayName?, fields = {...} }</code>.</p>
+<ul>
+<li><strong>Field types:</strong> <code>float</code>, <code>int</code>, <code>bool</code>, <code>string</code>, <code>vec3</code>, <code>quat</code>, <code>enum</code>, and <code>array</code> with <code>of</code>.</li>
+<li><strong>Field options:</strong> <code>min</code>, <code>max</code>, <code>color</code>, <code>values</code>, <code>default</code>.</li>
+<li><strong>Checks:</strong> strict key checks, each error naming the file.</li>
+</ul>
+<p>There are two more top-level keys, for the server only (a client sharing the file should accept and ignore them):</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Values</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>persist</code></td>
+<td><code>true</code> / <code>false</code></td>
+<td><code>false</code></td>
+<td>Saved per character in MySQL (see Persistence below)</td>
+</tr>
+<tr>
+<td><code>replicate</code></td>
+<td><code>"none"</code> / <code>"owner"</code> / <code>"aoi"</code></td>
+<td><code>"none"</code></td>
+<td><code>owner</code>: sent to the owning player only. <code>aoi</code>: to the owner and every player who can see the character. <code>none</code>: never sent</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-lua">-- lua/components/health.lua (the sample)
+return {
+    name = &quot;Health&quot;,
+    persist = true,
+    replicate = &quot;aoi&quot;,
+    fields = {
+        { name = &quot;current&quot;, type = &quot;float&quot;, default = 100, min = 0 },
+        { name = &quot;max&quot;,     type = &quot;float&quot;, default = 100, min = 1 },
+        -- ...
+    },
+}
+</code></pre>
+<ul>
+<li><strong>Invalid values:</strong> a bad <code>persist</code> or <code>replicate</code> is a definition error.</li>
+<li><strong>Reserved names:</strong> a definition may not be named <code>Character</code>, <code>Npc</code>, <code>Transform</code> or <code>StateMachine</code> (the built-ins), or after any server C++ component (<code>Viewers</code>, <code>SessionLink</code>, <code>CharacterRef</code>, <code>MoveState</code>, <code>PendingMoves</code>, <code>PendingSay</code>, <code>ChatLimit</code>, <code>PendingClientEvents</code>, <code>ClientEventLimit</code>, <code>MoveLock</code>, <code>AoiCell</code>, <code>Visible</code>, <code>Moved</code>, <code>Dirty</code>, <code>SaveTimer</code>, <code>ReplicatedState</code>, <code>ScriptsLeft</code>, <code>PreservedComponents</code>, <code>ComponentData</code>, <code>StateMachineRuntime</code>).</li>
+<li><strong>Duplicates:</strong> two files declaring the same name are both rejected, each error naming the other file, whatever the scan order.</li>
+</ul>
+<h2 id="items">Items</h2>
+<p>An item type is data: one file per item under <code>LUA_ROOT/items/</code> (scanned recursively). A client can load the game's
+<code>items/</code> with the same rules, so a folder shared by client and server
+gives both the same names, stack sizes and qualities. NPC <a href="npcs.html#npc-loot">loot tables</a> name items by <code>id</code>.</p>
+<pre><code class="language-lua">return {
+    id = &quot;bat_wing&quot;,                          -- unique across items/; a-z, 0-9 and _, at most 64 bytes
+    name = &quot;Bat Wing&quot;,                        -- shown to players; at most 255 bytes
+    icon = &quot;textures/icons/bat_wing.png&quot;,     -- project-relative image for clients; the server never opens it
+    quality = &quot;poor&quot;,                         -- poor, common, uncommon, rare or epic
+    maxStack = 20,                            -- 1..1000
+    sellPrice = 1,                            -- integer, 0..1000000000
+    description = &quot;A leathery wing.&quot;,         -- may be empty; at most 1024 bytes
+}
+</code></pre>
+<ul>
+<li><strong>Keys:</strong> exactly these seven, all required; any other key is an error.</li>
+<li><strong>Loading:</strong> once at startup, after <code>fsms/</code> and before <code>npcs/</code>, in the definition sandbox. Every invalid file is one
+  <code>Lua error</code> starting with its path (<code>items/bat_wing.lua: "maxStack" must be an integer in [1, 1000]</code>) and refuses the
+  start. Two files with the same <code>id</code> are both rejected, each error naming the other file. A missing or empty <code>items/</code>
+  is fine.</li>
+<li><strong>In systems:</strong> <code>chthonic.items</code> is <code>{[id] = {id =, name =, icon =, quality =, maxStack =, sellPrice =, description =}}</code>,
+  read-only all the way down (writing raises <code>chthonic is read-only</code>). What an item <em>does</em> is up to the systems (a bag system, say).</li>
+</ul>
+<h2 id="definitions">Game data folders (<code>chthonic.definitions</code>)</h2>
+<p>A game's own data (quests, vendors, dialog...) can live in any folder under <code>LUA_ROOT</code>, one plain-data table per file,
+and a system reads it with <code>chthonic.definitions(folder)</code>. The server gives the files no meaning: the system checks them.</p>
+<pre><code class="language-lua">local quests, paths = chthonic.definitions(&quot;.server/quests&quot;)
+-- quests: {table, ...}, one per .lua file under LUA_ROOT/.server/quests (recursively), sorted by path
+-- paths:  {&quot;.server/quests/bat_trouble.lua&quot;, ...}, LUA_ROOT-relative, for error messages
+</code></pre>
+<ul>
+<li><strong>Folder:</strong> a relative, <code>/</code>-separated path without empty, <code>.</code> or <code>..</code> parts and without <code>\</code> or <code>:</code>,
+  so it stays under <code>LUA_ROOT</code>; anything else raises <code>chthonic.definitions: folder must be a relative path ...</code>. A missing
+  folder returns two empty tables.</li>
+<li><strong>Files:</strong> each runs once in the definition sandbox and must return exactly one plain-data table (no functions or
+  metatables). A file that fails raises <code>chthonic.definitions: &lt;path&gt;: ...</code> in the caller; called from <code>init</code>, that refuses
+  the start like any <code>init</code> error.</li>
+<li><strong>Read once:</strong> the first call per folder reads the files; later calls (any system) return fresh copies of the same
+  data, so a system may change what it gets. Call it from <code>init</code>: the files are not read again until restart.</li>
+<li><strong>Server-only data:</strong> a folder such as <code>.server/quests/</code> in a folder the client and server share stays out of a
+  client build that leaves dot-folders out, so it never reaches players.</li>
+</ul>
+<h2 id="systems">Systems</h2>
+<p>A system file returns a table; only <code>update</code> is required:</p>
+<pre><code class="language-lua">return {
+    init = function() end,         -- at startup, after the file loaded; an error here refuses the start
+    update = function(dt) end,     -- every tick; dt = 1 / TICK_HZ seconds
+    shutdown = function() end,     -- graceful shutdown, before the final saves
+    onEnter = function(e) end,     -- a character spawned; its persisted components are already restored (never an NPC)
+    onLeave = function(e) end,     -- a character is leaving; changes made here are saved (never an NPC)
+    onMapLeave = function(e) return carried end, -- e (player or NPC) is about to move to another map's context
+    onMapEnter = function(e, carried) end,       -- e just arrived from another map's; carried: what onMapLeave returned
+    validateCharacter = function(name, options) return true end, -- may this character be created? (see below)
+    instanceKey = function(e, map) return key end, -- e is entering instance map `map`: which copy? (nil: a new one)
+    layerFor = function(e, map) return id end,     -- e is arriving on layered map `map`: which layer? (nil: placement)
+}
+</code></pre>
+<ul>
+<li><strong>One state per map, isolated files:</strong> each map in use has its own <a href="maps.html#map-contexts">context</a> with its own Lua state,
+  which loads <code>npcs/</code> and <code>systems/</code> and runs every <code>init</code> when the map's context starts (<code>START_MAP</code>'s at
+  startup, any other the first time it is used). So a module-level table (<code>local state = {}</code>) belongs to one map. <code>chthonic.*</code>
+  sees that map's entities only. Each system file gets its own environment, so globals never leak between files.</li>
+<li><strong>Which Lua runs where:</strong> systems, NPC definitions and the character and NPC <a href="state-machines.html#state-machines">state machines</a> run in every
+  map's context; the game machines (<code>GAME_STATE_MACHINES</code>) run only in the realm context, which loads <code>fsms/</code> and nothing else.</li>
+<li><strong>Changing map:</strong> a player or NPC that moves to another map takes every component along (persisted or not, <code>StateMachine</code>
+  with its current state), but not the old map's module tables. <code>onMapLeave(e)</code> runs in the old map's systems, then
+  <code>onMapEnter(e, carried)</code> in the new map's (see <a href="maps.html#map-contexts">Map contexts</a> for the order). Whatever a system's
+  <code>onMapLeave</code> returns (plain data, as an event payload; anything else disables the system) is that same system's <code>carried</code>
+  there (nil for nothing), so per-entity state goes along: <code>onMapLeave = function(e) local s = state[e]; state[e] = nil; return s end</code>,
+  <code>onMapEnter = function(e, s) state[e] = s end</code>. Store times as seconds left: each map's Lua counts its own time. Neither runs for
+  a transfer within a map, a login or a logout.</li>
+<li><strong>Instance copies:</strong> each copy of an <a href="instances.html">instance map</a> is a context of its own: its systems' <code>init</code>
+  runs when the copy is made and <code>shutdown</code> when it is destroyed (the per-instance hooks), and its module tables are its own.
+  <code>instanceKey(e, map)</code> runs in the context <code>e</code> is leaving, on a portal or <code>chthonic.transfer</code> into instance map <code>map</code>
+  (not with <code>instance =</code>): the first system returning a non-empty string of at most 255 bytes picks the copy by that key; nil from
+  all, a new keyless copy; anything else disables that system.</li>
+<li><strong>Layers:</strong> each layer of a <a href="maps.html#layers">layered world map</a> is a context of its own too (<code>init</code> when it
+  opens, <code>shutdown</code> when an extra layer closes; the base layer never does). <code>layerFor(e, map)</code> is asked for every player
+  arriving on layered map <code>map</code> from elsewhere: in the context <code>e</code> is leaving on a portal or <code>chthonic.transfer</code> (not with
+  <code>layer =</code>, and not for NPCs), and at a login in the map's base layer with <code>e</code> nil (the character has no entity yet). The
+  first system returning an integer in [0, 4294967295] names the layer (its instanceId; 0: the base): joined if it is live with room,
+  else ignored. nil from all, or an ignored pick: placement (the fullest layer with room, else a new one). Anything else returned, or an
+  error, disables that system. Typical use: keep a group together by returning the layer its leader is in
+  (<code>chthonic.map.instance().id</code> there).</li>
+<li><strong>Sandbox:</strong> Only base, table, string and math are open, with no <code>io</code>, <code>os</code>, <code>ffi</code>, <code>debug</code>, <code>jit</code>, <code>package</code>, <code>require</code>, <code>loadfile</code>, <code>dofile</code>, <code>load</code> or <code>loadstring</code>. Definition files are sandboxed too.</li>
+<li><strong>Runaway scripts:</strong> a callback that runs longer than 2 s raises an error, so an infinite loop disables its system instead of hanging the server.</li>
+<li><strong>Runtime errors:</strong> an error in any callback is logged as <code>Lua system disabled</code>, with the system, the callback and <code>path:line</code>. That system is then disabled until restart; the server and the other systems keep running.</li>
+</ul>
+<p><strong>The <code>chthonic.*</code> API</strong> is meant to match the client's semantics and error messages, so a script behaves the same on client and server:</p>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>What</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>chthonic.query(names...)</code></td>
+<td>Iterator over entity ids with every listed component, in ascending id order. Captured when called: entities gone later in the loop are skipped</td>
+</tr>
+<tr>
+<td><code>chthonic.items</code></td>
+<td>The <a href="#items">item definitions</a> by id, read-only</td>
+</tr>
+<tr>
+<td><code>chthonic.definitions(folder)</code></td>
+<td>The <a href="#definitions">plain-data tables</a> returned by every <code>.lua</code> file under <code>LUA_ROOT/folder</code>, and their paths</td>
+</tr>
+<tr>
+<td><code>chthonic.npcDef(name)</code></td>
+<td>A fresh copy of the <a href="npcs.html#npc-definitions">NPC definition</a> <code>name</code>: <code>{name, template, loot}</code> (<code>loot</code> nil without one); nil for an unknown name. A non-string name raises</td>
+</tr>
+<tr>
+<td><code>chthonic.get(e, name)</code></td>
+<td>A fresh table of the component's fields; arrays are 1-based sequences, <code>vec3</code>/<code>quat</code> are <code>{x=, y=, z=[, w=]}</code>. <code>Spawn</code> is the exception: one table per spawn, shared between calls and NPCs, and read-only. A write raises <code>"Spawn" is read-only</code>, except replacing an entry of <code>path</code>, which LuaJIT can't guard (don't). <code>#path</code> and <code>ipairs(path)</code> work; <code>pairs</code> lists nothing on the table, <code>pos</code> or a point</td>
+</tr>
+<tr>
+<td><code>chthonic.set(e, name, fields)</code></td>
+<td>Partial: listed fields change, the others keep their values. All-or-nothing: an unknown field, a wrong type, an out-of-range value or an unknown enum value raises an error and leaves the component unchanged</td>
+</tr>
+<tr>
+<td><code>chthonic.has(e, name)</code> / <code>chthonic.add(e, name)</code> / <code>chthonic.remove(e, name)</code></td>
+<td><code>add</code> uses the field defaults and does nothing if the component is present; <code>remove</code> does nothing if it is absent</td>
+</tr>
+<tr>
+<td><code>chthonic.create(name, opts)</code></td>
+<td>Creates an NPC and returns its entity id; <code>opts = {npc = string \| template = string, components = {...}?, map = id?, position = {x, y, z}?, heading = number?}</code> (see <a href="npcs.html#npcs">NPCs</a>). <code>map</code> defaults to this context's map. On another map the id is returned now and the NPC is created in that map's context at the end of the tick, so it is not in this one (<code>chthonic.get</code> raises <code>invalid entity id</code>)</td>
+</tr>
+<tr>
+<td><code>chthonic.transfer(e, map, position [, heading])</code><br><code>chthonic.transfer(e, {map =, position =, heading =?, instance =?, layer =?})</code></td>
+<td>Moves player or NPC <code>e</code> to <code>position</code> (<code>{x, y, z}</code>) on map <code>map</code>; <code>heading</code> defaults to the current one. Onto an <a href="instances.html">instance map</a>, <code>instance</code> (a non-empty string of at most 255 bytes) is the copy's key and the <code>instanceKey</code> hooks are not asked; on a world map it raises. Returns <code>true</code>, or <code>false</code> if this process does not own the destination (see <a href="maps.html#maps">Maps</a>) or the copy is full (<code>instance.full</code> on this bus; <a href="instances.html#full">Instances</a>). Onto a <a href="maps.html#layers">layered world map</a>, <code>layer</code> (an integer in [0, 4294967295]: a layer's instanceId, 0 the base) picks the layer and the <code>layerFor</code> hooks are not asked: <code>false</code> if that layer is full or gone (<code>instance.full</code> <code>{entity, map, layer}</code>; nothing moves); on another map it raises. Without <code>layer</code> a player arriving from another map is placed (<code>layerFor</code>, then the fullest layer with room), and a transfer within the map stays in its layer. Within this map it moves at once; onto another map at the end of the tick (until then <code>e</code> is still here, where it was)</td>
+</tr>
+<tr>
+<td><code>chthonic.destroy(e)</code></td>
+<td>Removes NPC <code>e</code>; the players who see it get <code>Despawn</code></td>
+</tr>
+<tr>
+<td><code>chthonic.setMovable(e, movable)</code></td>
+<td><code>false</code>: the server refuses every <code>Move</code> from player <code>e</code> (one <code>Correction</code> back to where it stands per tick) until set <code>true</code> again. Not saved: a character logs in movable. Raises for an NPC (<code>chthonic.setMovable: entity N is an NPC; only players send moves</code>) and for a non-boolean</td>
+</tr>
+<tr>
+<td><code>chthonic.debug/log/warn/error(msg [, fields])</code></td>
+<td>A server log line <code>&lt;system path&gt;: &lt;msg&gt;</code> at debug, info, warn or error (<code>LOG_LEVEL</code> filters them;
+  <code>chthonic.debug</code> shows only with <code>LOG_LEVEL=debug</code>). <code>fields</code> is a table of plain data, as an event payload, and becomes JSON fields
+  after <code>msg</code>: <code>chthonic.log("hit", {player = 7, zone = "x"})</code> logs <code>{"ts":…,"level":"info","msg":"systems/a.lua: hit","player":7,"zone":"x"}</code>;
+  nested tables become nested JSON. Raises (at the script's file:line, naming the function, e.g. <code>chthonic.log: fields must be a table, got 5</code>)
+  when <code>fields</code> is not a table, is a list, holds a function, userdata or thread, contains itself, or uses the reserved keys
+  <code>ts</code>, <code>level</code> or <code>msg</code>. Never log tokens, passwords or chat text</td>
+</tr>
+<tr>
+<td><code>chthonic.publish(name [, payload])</code></td>
+<td>Queues an event on this map's event bus for the next drain (see <a href="events.html#events">Events</a>)</td>
+</tr>
+<tr>
+<td><code>chthonic.world.post(target, event, data)</code></td>
+<td id="post">Sends <code>event</code> to another context's bus: <code>target</code> is a loaded world map's id, <code>"realm"</code> or <code>"all"</code> (every running map context, instance copies included, and the realm, this one included). An instance map's id raises <code>chthonic.world.post: map N is an instance map, with no single context to post to</code>. Delivered on the next tick, in post order, as <code>{from = &lt;map id or "realm"&gt;, data = data}</code>; a map whose context has not started yet starts for it. <code>event</code> and <code>data</code> are checked as <code>chthonic.publish</code>'s; a bad target raises <code>chthonic.world.post: target must be a loaded map's id, "realm" or "all", got X</code>. Also from the realm's game machine callbacks</td>
+</tr>
+<tr>
+<td><code>chthonic.subscribe(name, fn)</code></td>
+<td>Calls <code>fn(payload)</code> for every later <code>name</code> event; returns a handle</td>
+</tr>
+<tr>
+<td><code>chthonic.unsubscribe(handle)</code></td>
+<td>Removes the calling system's subscription; another system's or a stale handle does nothing</td>
+</tr>
+<tr>
+<td><code>chthonic.sendTo(e, name [, payload])</code></td>
+<td>Sends the event to character <code>e</code>'s client only (an NPC has none: nothing is sent)</td>
+</tr>
+<tr>
+<td><code>chthonic.sendNearby(e, name [, payload])</code></td>
+<td>Sends the event to <code>e</code>'s client and every client that currently sees <code>e</code> (the <code>replicate = "aoi"</code> audience)</td>
+</tr>
+<tr>
+<td><code>chthonic.broadcast(name [, payload])</code></td>
+<td>Sends the event to every player in the world, on every map (this map's players with this tick's other client events, the other maps' at the end of the tick). <code>chthonic.sendTo</code> / <code>sendNearby</code> / <code>reply</code> reach only entities in this map's context</td>
+</tr>
+<tr>
+<td><code>chthonic.fsm.state/change/canChange/states(target [, state])</code></td>
+<td>Game and character state machines (see <a href="state-machines.html#state-machines">State machines</a>); a game machine's state here is the realm's as of the last serial point, and a change of it is applied in the realm at the next</td>
+</tr>
+<tr>
+<td><code>chthonic.map.area(e)</code> / <code>chthonic.map.areaAt(map, x, y, z)</code></td>
+<td>The area <code>e</code> or a point is in: <code>{id, name, flags, music}</code> or <code>nil</code> (see <a href="areas.html#areas">Areas</a>)</td>
+</tr>
+<tr>
+<td><code>chthonic.map.instance()</code></td>
+<td>The <a href="instances.html">instance copy</a> this context runs: <code>{id, key, map}</code> (<code>key</code> nil for a keyless copy); on a <a href="maps.html#layers">layered world map</a> its layer: <code>{id, map, layer = true, base}</code> (<code>base</code>: <code>id</code> 0, the base layer, which never closes); <code>nil</code> on any other world map</td>
+</tr>
+<tr>
+<td><code>chthonic.map.spawn(map)</code></td>
+<td>The map's spawn point (<code>map.json</code> <code>"spawn"</code>): <code>{position = {x, y, z}, heading}</code>. Raises on an unloaded map</td>
+</tr>
+<tr>
+<td><code>chthonic.map.ground(map, x, z)</code></td>
+<td>The ground's height at a point on loaded map <code>map</code>, or <code>nil</code> off its tiles (see <a href="maps.html#ground">Ground</a>). Raises on an unloaded map</td>
+</tr>
+<tr>
+<td><code>chthonic.map.path(map, from, to)</code></td>
+<td>The navmesh path between two <code>{x, y, z}</code> points: a list of <code>{x, y, z}</code>, or <code>nil</code> (see <a href="maps.html#navmesh">Navmesh</a>). Raises on an unloaded map or a bad point</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Entities:</strong> an entity is a player character's or an NPC's server wire id, the integer clients see as <code>entityId</code>. <code>chthonic.query("Character")</code> finds the players, <code>chthonic.query("Npc")</code> the NPCs, and <code>chthonic.query()</code> both.</li>
+<li><strong><code>chthonic</code> is read-only:</strong> assigning to it raises an error.</li>
+<li><strong>Read-only built-ins:</strong> every character has <code>Character</code> and <code>Transform</code>, every NPC <code>Npc</code> and <code>Transform</code>, and an NPC from a spawn file also <code>Spawn</code>. <code>get</code>, <code>has</code> and <code>query</code> work on them; <code>set</code> and <code>add</code> raise <code>"&lt;name&gt;" is read-only on the server</code>, and <code>remove</code> raises <code>"&lt;name&gt;" cannot be removed</code>. The one exception is <code>set</code> on an NPC's <code>Transform</code> (see <a href="npcs.html#npcs">NPCs</a>).</li>
+<li><strong>Writable built-in:</strong> <code>StateMachine</code> (<code>machine</code>, <code>initialState</code>, both strings) works with every function, like a Lua component that is never persisted or replicated (see <a href="state-machines.html#state-machines">State machines</a>).</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Fields</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Character</code></td>
+<td><code>charId</code>, <code>name</code>, <code>options</code> (the <a href="#character-creation">creation options</a>, <code>{key = value, ...}</code>, empty for none; players only)</td>
+</tr>
+<tr>
+<td><code>Npc</code></td>
+<td><code>name</code>, <code>template</code>, <code>npc</code> (its <a href="npcs.html#npc-definitions">NPC definition</a>, <code>""</code> if made with <code>template</code>; NPCs only)</td>
+</tr>
+<tr>
+<td><code>Spawn</code></td>
+<td><code>id</code>, <code>pos = {x, y, z}</code>, <code>heading</code> (the spawn file's values; y is not clamped to the ground), and with a path <code>path = {{x, y, z}, ...}</code>, <code>wait</code> (seconds), <code>loop</code> (NPCs from a spawn file only; see <a href="npcs.html#npc-spawns">NPC spawns</a>)</td>
+</tr>
+<tr>
+<td><code>Transform</code></td>
+<td><code>position = {x, y, z}</code>, <code>heading</code> (radians), <code>map</code> (id, read-only). A player moves only by the validated client movement, an NPC only by <code>chthonic.set</code>; either changes map only by <code>chthonic.transfer</code></td>
+</tr>
+<tr>
+<td><code>StateMachine</code></td>
+<td><code>machine</code>, <code>initialState</code> (writable; added by <code>chthonic.add</code>, an NPC definition or <code>chthonic.create</code>'s <code>components</code>)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="character-creation">Character creation</h2>
+<p>A client may create a character with options, string pairs the game defines (<code>chthonic.world.createCharacter(name, {class = "mage"})</code>).
+The client and the protocol only carry them. The server checks, in this order:</p>
+<ol>
+<li><strong>C++ limits:</strong> at most 8 options, keys of 1–16 characters of <code>[a-z_]</code>, values of at most 32 printable ASCII characters. Anything else is <code>CharError{options_invalid}</code>, and no Lua runs.</li>
+<li><strong>The Lua hook:</strong> every enabled system that returns a <code>validateCharacter</code> function is called with the name and a fresh table of the options. Each must return exactly <code>true</code>; anything else (<code>false</code>, <code>nil</code>, any other value) refuses the character with <code>options_invalid</code>. An error refuses it too, and disables that system like an error in any callback.</li>
+<li><strong>No hook:</strong> when no system defines <code>validateCharacter</code> (the default <code>world/lua</code>), empty options create the character as before and any option is refused with <code>options_invalid</code>.</li>
+</ol>
+<p>Then the usual rules (name taken, character limit) apply. Accepted options are saved with the character (the <code>options</code> column,
+migration <code>004_character_options.sql</code>) and return in every character list. In the world, <code>chthonic.get(e, "Character").options</code>
+holds them, typically read in <code>onEnter</code> to set up a component. A character created before migration 004 has empty options.</p>
+<pre><code class="language-lua">-- systems/classes.lua (an example)
+local CLASSES = {warrior = {maxHealth = 140}, mage = {maxHealth = 80}, priest = {maxHealth = 90}, rogue = {maxHealth = 110}}
+return {
+    validateCharacter = function(name, options)
+        for key in pairs(options) do
+            if key ~= "class" then return false end
+        end
+        return CLASSES[options.class] ~= nil
+    end,
+    onEnter = function(e)
+        if not chthonic.has(e, "Class") then -- a persisted component: set once, from the creation options
+            local wanted = chthonic.get(e, "Character").options.class
+            chthonic.add(e, "Class")
+            chthonic.set(e, "Class", {id = CLASSES[wanted] and wanted or "warrior"})
+        end
+    end,
+    update = function(dt) end,
+}
+</code></pre>
+<p>The hook runs on the server's game thread while the request is answered, so keep it to checks on its arguments.</p>
+<h2 id="tick-order">Tick order</h2>
+<p>Each tick runs, in this order, in every map's context (steps 1-2 for every map, a <a href="maps.html#map-contexts">serial point</a>, then the
+rest for every map, then another serial point):</p>
+<ol>
+<li>movement</li>
+<li><strong>areas:</strong> <code>area.leave</code> / <code>area.enter</code> for players that moved, and portal transfers (<a href="areas.html#areas">Areas</a>)</li>
+<li>AOI (<code>Spawn</code> / <code>Despawn</code>)</li>
+<li>chat</li>
+<li><strong>client events in:</strong> each character's <code>ClientEvent</code>s published on the bus as <code>client.&lt;name&gt;</code> (<a href="#client-events">Client events</a>)</li>
+<li><strong>spawner:</strong> the <a href="npcs.html#npc-spawns">NPC spawns</a> that are due</li>
+<li><strong>Lua <code>update</code></strong>, every system in filename order</li>
+<li><strong>event drain:</strong> the events queued since the last drain go to their subscribers</li>
+<li>replication (one <code>EntityMoves</code> per player)</li>
+<li>component replication</li>
+<li><strong>events to clients:</strong> <code>ServerEvent</code> for every <code>chthonic.sendTo</code> / <code>sendNearby</code> / <code>broadcast</code> since the last flush</li>
+<li>save</li>
+<li>end of tick</li>
+</ol>
+<p>Lua sees this tick's validated positions. Its changes are replicated and become eligible for saving in the same tick.
+An NPC that Lua creates, or moves into or out of a player's view, gets its <code>Spawn</code> / <code>Despawn</code> at the next tick's step 3.</p>
+<p>Lifecycle hooks run at these points:</p>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Hooks</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>EnterWorld</code></td>
+<td>Spawn, restore the persisted components, then <code>onEnter</code></td>
+</tr>
+<tr>
+<td>Logout, disconnect or duplicate-login kick</td>
+<td><code>onLeave</code> and its client events, then the save and the despawn</td>
+</tr>
+<tr>
+<td>A portal or <code>chthonic.transfer</code> onto another map</td>
+<td><code>onMapLeave</code> in the old map's context (and the client events queued there so far), then the move, then <code>onMapEnter</code> in the new map's (<a href="maps.html#map-contexts">Map contexts</a>)</td>
+</tr>
+<tr>
+<td>Graceful shutdown</td>
+<td><code>onLeave</code> for every character, then every system's <code>shutdown</code>, then their client events, then the saves and despawns. Undelivered bus events are dropped</td>
+</tr>
+</tbody>
+</table>
+<h2 id="client-events">Client events</h2>
+<p>A client sends an event to the server's Lua (<code>chthonic.world.send(name, data)</code>
+on the client; wire format in <a href="protocol.html#client-events">protocol</a>).
+Systems receive it on the bus as <code>client.&lt;name&gt;</code>:</p>
+<pre><code class="language-lua">chthonic.subscribe(&quot;client.combat.power&quot;, function(e)
+    -- e.entity: the sender's character entity id; e.data: the client's JSON object as a table
+    local target = e.data.target
+    if type(target) ~= &quot;number&quot; or not chthonic.has(target, &quot;Npc&quot;) then return end
+    -- ...
+end)
+</code></pre>
+<ul>
+<li><strong>Payload:</strong> <code>{entity = &lt;sender's character entity id&gt;, data = &lt;the JSON object as a table&gt;}</code>. <code>entity</code> is set by the server and always the sender.</li>
+<li><strong>Untrusted:</strong> <code>data</code> is whatever the client sent. Check every field's type and every claim (range, cooldown, ownership) before acting on it (<a href="security.html#client-events">Security, Client events</a>).</li>
+<li><strong>Timing:</strong> published after chat (tick order step 5) and delivered by the event drain right after that tick's Lua <code>update</code>, in arrival order.</li>
+<li><strong>Limits:</strong> name 1–32 characters of <code>a-z0-9._</code>, at most 1 KB of JSON, 10 per second per character; the rest are dropped (<a href="protocol.html#client-events">protocol</a>).</li>
+</ul>
+<h2 id="persistence-1">Persistence</h2>
+<ul>
+<li><strong>Storage:</strong> components with <code>persist = true</code> are stored in <code>characters.components</code>, a JSON column added by <code>migrations/002_character_components.sql</code>. It holds <code>{"&lt;Name&gt;": {...}, ...}</code> in the replication encoding.</li>
+<li><strong>When they are saved:</strong> with the position, through the existing save flow on the DB worker. That means on logout/disconnect and on graceful shutdown. Every <code>chthonic.set</code> / <code>add</code> / <code>remove</code> that changes a persisted component marks the character dirty, so the <code>SAVE_INTERVAL_MS</code> save picks it up. The tick never waits on MySQL.</li>
+<li><strong>Loading (drift rules):</strong> a missing field gets its default, an unknown field is dropped, and a wrong-typed or out-of-range value is reset to its default. Each fix logs a <code>persisted component fixed on load</code> warning naming the character and field.</li>
+<li><strong>No data loss:</strong> column entries with no current definition, or whose definition is no longer <code>persist</code>, are kept verbatim and written back unchanged on every save. A column that isn't a JSON object is never overwritten (and nothing is restored from it).</li>
+</ul>
+<h2 id="replication">Replication</h2>
+<p><code>ComponentUpdate</code> and <code>ComponentRemove</code> are described in <a href="protocol.html#lua-components">protocol</a>.</p>
+<ul>
+<li><strong>What is sent:</strong> after the Lua systems run, every <code>owner</code> / <code>aoi</code> component that was added, changed or removed since it was last sent. The diff is per component against the last sent JSON, so unchanged components are never resent.</li>
+<li><strong>Full sets:</strong> the owner gets its full set on the first tick in the world. A viewer gets an entity's full <code>aoi</code> set when the entity comes into view, right after its <code>Spawn</code>.</li>
+<li><strong>NPCs:</strong> the same rules without an owner: <code>aoi</code> components go to the players who see the NPC, <code>owner</code> ones to nobody.</li>
+<li><strong>Ordering:</strong> data never precedes <code>Spawn</code> or follows <code>Despawn</code>.</li>
+<li><strong>Client writes:</strong> there are none. A client that sends a component message is disconnected with <code>unexpected_message</code>. Clients ask for changes with <a href="#client-events">client events</a>, which a system checks and applies.</li>
+</ul>
+<h2 id="sample">Sample</h2>
+<p>The <code>lua/</code> folder holds the sample:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>What</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>components/health.lua</code></td>
+<td><code>Health</code>: <code>persist</code>, <code>replicate = "aoi"</code>, every field type</td>
+</tr>
+<tr>
+<td><code>components/wallet.lua</code></td>
+<td><code>Wallet { gold }</code>: <code>persist</code>, <code>replicate = "owner"</code></td>
+</tr>
+<tr>
+<td><code>fsms/locomotion.lua</code></td>
+<td>Character machine <code>idle</code> / <code>moving</code>, each enterable only from the other. Every <code>enter</code> sends the owner <code>fsm.state</code> <code>{machine, from, to}</code> (<code>chthonic.sendTo</code>)</td>
+</tr>
+<tr>
+<td><code>fsms/zone_cycle.lua</code></td>
+<td>Game machine <code>day</code> / <code>night</code> (listed in <code>GAME_STATE_MACHINES</code>). <code>enter</code> only logs</td>
+</tr>
+<tr>
+<td><code>fsms/patrol.lua</code></td>
+<td>NPC machine <code>walking</code> / <code>waiting</code>, each enterable only from the other. No callbacks: it only records the phase</td>
+</tr>
+<tr>
+<td><code>npcs/guard.lua</code>, <code>npcs/sentry.lua</code></td>
+<td>NPC definitions "Guard" and "Sentry" (template <code>Guard</code>): <code>Health</code> data and <code>StateMachine</code> with <code>patrol</code></td>
+</tr>
+<tr>
+<td><code>npcs/bat.lua</code></td>
+<td>NPC definition "Bat" (template <code>Guard</code>): <code>Health</code> data, no machine</td>
+</tr>
+<tr>
+<td><code>systems/locomotion.lua</code></td>
+<td><code>onEnter</code> adds <code>StateMachine</code> with <code>locomotion</code>, which enters <code>idle</code>, then tries <code>idle</code> again: denied by <code>allowedFrom</code>, a warning and no event. <code>update</code> switches to <code>moving</code> when the character's <code>Transform</code> changes and back to <code>idle</code> after 1 s standing still. It flips <code>zone_cycle</code> every 5 minutes if it is listed (every map's copy asks at the same tick, as a flip restarts each copy's timer; the realm applies it once). Its per-character entry goes along on a map change (<code>onMapLeave</code> / <code>onMapEnter</code>), as does <code>systems/regen.lua</code>'s. It sends only on transitions, never per tick</td>
+</tr>
+<tr>
+<td><code>systems/events.lua</code></td>
+<td>On login, sends the player <code>welcome</code> (<code>sendTo</code>) and publishes <code>player.entered</code> on the bus. Its subscriber runs on the next tick, after the newcomer's <code>Spawn</code>, and sends <code>player.arrived</code> to the newcomer and everyone who sees it (<code>sendNearby</code>). On logout, sends every player <code>player.left</code> (<code>broadcast</code>) before the <code>Despawn</code>. It sends only on login and logout, never per tick. It also subscribes to <code>area.enter</code> / <code>area.leave</code> and logs each (<code>area.enter entity 5 map 1 area goldshire (Goldshire) flags {noMount=false, pvp=true}</code>)</td>
+</tr>
+<tr>
+<td><code>systems/npcs.lua</code></td>
+<td>Patrols every NPC whose <code>Spawn</code> has a path (its definition gives it the <code>patrol</code> machine): it walks it at 3 m/s to each point in turn, facing where it goes, and waits the path's <code>wait</code> at each (<code>loop</code>, or back along the path). While walking it costs one <code>EntityMoves</code> entry per tick per viewer. No NPCs or waypoints of its own: the sample maps' spawn files place the "Guard" (<code>npc</code> Guard, <code>maps/start/.server/spawns/4_4.json</code>: respawn 5 s, a 20 m square around the spawn point, 2 s waits), the "Sentry" on the hills and a still "Bat" (never respawns) at map 2's spawn point, the far side of the sample portal</td>
+</tr>
+<tr>
+<td><code>systems/test_hooks.lua</code></td>
+<td>Test only. Scenario 18: a character whose name starts with <code>Respawntest</code> destroys the Guard (spawn <code>guard_1</code>) when it enters. Scenarios 21 and 22: every <code>client.test.echo</code> goes back to its sender as <code>test.echo</code> <code>{n, entity}</code>. Scenario 41 and <code>load.sh</code>'s instance copies: <code>client.test.instance_key</code> <code>{key}</code> sets the sender's instance key, which its <code>instanceKey</code> returns; <code>instance.full</code> goes back to the refused player as <code>test.instance_full</code> <code>{map, key}</code>. Remove it from a real game</td>
+</tr>
+<tr>
+<td><code>systems/regen.lua</code></td>
+<td><code>onEnter</code> adds <code>Health</code> and <code>Wallet</code> if absent and pays 1 gold per login. Once a second per character, each on its own phase, <code>update</code> regenerates <code>Health.current</code> toward <code>max</code> (+2) if the character stood still, or drains it by 0.5 per metre moved (<code>Transform</code> deltas). It keeps whole points and writes only on a change, so a character costs at most one <code>ComponentUpdate</code> a second per viewer</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Keep replicated components quiet.</strong> Each change goes out in full to the owner and everyone in view. A component written every tick costs one message per tick per viewer, and in a crowd that is N² messages. An earlier sample that updated <code>Health</code> every tick made the 500-bot load test drop 378 clients on the 1 MiB send-buffer cap while they crowded the spawn point. Write replicated values at the rate clients need, and only when they change.</p>
+</main>
+</div>
+</body>
+</html>

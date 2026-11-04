@@ -1,0 +1,805 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Protocol - Chthonic World Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html" class="active">Protocol</a></li></ul></nav>
+<main>
+<h1 id="chthonic-world-protocol">Chthonic World Protocol</h1>
+<p><strong>Protocol version: 9</strong> (<code>kProtocolVersion</code> in <code>protocol/messages.h</code>, sent in <code>Hello</code>). A client on any other version gets <code>protocol_mismatch</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Version</th>
+<th>Changes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>9</td>
+<td>Batched moves: <code>EntityMove</code> is replaced by <code>EntityMoves</code> (same opcode <code>0x0122</code>), every move a viewer sees in a tick in one message. See <a href="#movement">Movement</a></td>
+</tr>
+<tr>
+<td>8</td>
+<td>Chat: <code>Say</code> and <code>ChatMsg</code> start with <code>u8 kind</code> (say, yell, emote); new <code>ChatServer</code> (<code>0x012A</code>) after <code>EnterWorldOk</code>; <code>ChatNotice</code> (<code>0x0132</code>) for a muted say; the chat service's messages (<code>0x0030</code>&ndash;<code>0x0034</code>, <code>0x0130</code>&ndash;<code>0x0132</code>) and its internal link (<code>0x0200</code>&ndash;<code>0x0205</code>); new code <code>no_character</code> (26). See <a href="#proximity-chat">Proximity chat</a> and <a href="../chat/protocol.html">Chat service protocol</a></td>
+</tr>
+<tr>
+<td>7</td>
+<td>Requests: <code>ClientEvent</code> gains <code>u32 requestId</code>; new <code>Reply</code> (<code>0x0129</code>)</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Client prediction: <code>Move</code> gains <code>u32 seq, u32 epoch</code>; <code>Correction</code> gains <code>u32 ackSeq, u32 epoch</code>; <code>MapChange</code> gains <code>u32 epoch</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td>Map objects: new <code>Interact</code> (<code>0x0023</code>). See <a href="#interact">Interact</a></td>
+</tr>
+<tr>
+<td>4</td>
+<td>Character creation options: <code>CharCreate</code> and <code>CharInfo</code> gain an <code>options</code> map; new code <code>options_invalid</code> (25). See <a href="#characters">Characters</a></td>
+</tr>
+<tr>
+<td>3</td>
+<td>Maps: <code>EnterWorldOk</code> gains <code>u16 map</code> after <code>entityId</code>; new <code>MapChange</code> (<code>0x0128</code>). See <a href="#maps">Maps</a></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>Spawn</code> gains <code>kind</code> and <code>template</code> (NPCs)</td>
+</tr>
+<tr>
+<td>1</td>
+<td>First version</td>
+</tr>
+</tbody>
+</table>
+<p>The encoder and decoder live in <code>protocol/</code>, a static library with no Asio, database or ECS dependency, so a game client can reuse it.</p>
+<h2 id="transport">Transport</h2>
+<ul>
+<li><strong>Connection:</strong> TLS (1.2 or later) over TCP. Default port 7777.</li>
+<li><strong>Dev certificate:</strong> with no certificate configured, the server generates a self-signed one with SANs <code>localhost</code>, <code>world</code> and <code>127.0.0.1</code>. Clients trust it by loading that file as their CA.</li>
+<li><strong>Byte order:</strong> every integer is little-endian.</li>
+<li><strong>Floats:</strong> <code>f32</code> is IEEE-754, written as its u32 bits. NaN and infinity are malformed.</li>
+</ul>
+<h3 id="frame">Frame</h3>
+<pre><code>+----------------+----------------+----------------------+
+| u16 length     | u16 opcode     | payload (length B)   |
++----------------+----------------+----------------------+
+</code></pre>
+<ul>
+<li><strong><code>length</code>:</strong> the number of payload bytes, not counting the 4-byte header.</li>
+<li><strong>Size limit:</strong> a frame whose <code>length</code> is over <code>MAX_FRAME_BYTES</code> (default 4096) gets <code>frame_too_large</code>. The server checks this from the header, before reading the payload.</li>
+<li><strong>Exact payload:</strong> the payload must decode to exactly <code>length</code> bytes. Short fields, a string that runs past the end, trailing bytes, or a bad enum value all mean <code>malformed</code>.</li>
+</ul>
+<h3 id="field-types">Field types</h3>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Encoding</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>u8</code> / <code>u16</code> / <code>u32</code> / <code>u64</code></td>
+<td>Unsigned, little-endian</td>
+</tr>
+<tr>
+<td><code>f32</code></td>
+<td>IEEE-754 single precision, as u32 bits; must be finite</td>
+</tr>
+<tr>
+<td><code>str</code></td>
+<td><code>u16</code> byte length + that many bytes (UTF-8 where noted)</td>
+</tr>
+<tr>
+<td><code>vec3</code></td>
+<td><code>f32 x, f32 y, f32 z</code>. x/z is the ground plane; y is height</td>
+</tr>
+</tbody>
+</table>
+<h2 id="handshake">Handshake</h2>
+<pre><code>client                                 server
+  |---- TCP connect -----------------------&gt;|   handshake deadline starts (HANDSHAKE_TIMEOUT_MS, 10 s)
+  |&lt;=== TLS handshake =====================&gt;|
+  |---- Hello{protocolVersion} ------------&gt;|   mismatch -&gt; Disconnect{protocol_mismatch}
+  |---- Auth{accessToken} -----------------&gt;|   JWT checked against auth's JWKS (security.html)
+  |&lt;--- AuthOk{accountId, role} ------------|   or Disconnect{invalid_token | token_expired | service_unavailable}
+  |                                         |   deadline cleared
+  |---- CharListReq / CharCreate / ... ----&gt;|   lobby: character requests
+  |&lt;--- CharList / CharCreated / CharError -|
+  |---- EnterWorld{charId} ----------------&gt;|
+  |&lt;--- EnterWorldOk{entityId, map, ...} ---|   in world
+  |---- Move / Say / ClientEvent ----------&gt;|
+  |&lt;--- Spawn / Despawn / EntityMoves / ...|
+</code></pre>
+<ul>
+<li><strong>Deadline:</strong> the whole handshake must finish within the deadline: TLS, <code>Hello</code> and <code>Auth</code>. Otherwise the server sends <code>Disconnect{handshake_timeout}</code>. A client that never starts TLS is simply closed, because there is no secure channel to send a reason on.</li>
+<li><strong>Message order:</strong><ul>
+<li>Before <code>AuthOk</code>, only <code>Hello</code> and then <code>Auth</code> are accepted. Any other message gets <code>Disconnect{unexpected_message}</code>, and so does any message sent while the token is being verified.</li>
+<li>In the lobby, <code>Move</code>, <code>Say</code> and <code>ClientEvent</code> are ignored.</li>
+<li>In the world, a character request is answered with <code>CharError{already_in_world}</code>.</li>
+</ul>
+</li>
+<li><strong>Token lifetime:</strong> the token is checked only at the handshake. The session then lasts until disconnect (see <a href="security.html#ban-gap">Security, Ban gap</a>).</li>
+<li><strong>Duplicate login:</strong> a second login for an account that is already online kicks the old session with <code>Disconnect{logged_in_elsewhere}</code> and saves its character first.</li>
+</ul>
+<h3 id="heartbeat">Heartbeat</h3>
+<ul>
+<li><strong>Server pings:</strong> the server sends <code>Ping{nonce}</code> every <code>PING_INTERVAL_MS</code> (default 20 s). The client must answer <code>Pong{nonce}</code>.</li>
+<li><strong>Client pings:</strong> a client may also send <code>Ping</code>, and the server answers <code>Pong</code>.</li>
+<li><strong>Idle timeout:</strong> a connection that sends nothing for <code>IDLE_TIMEOUT_MS</code> (default 60 s) gets <code>Disconnect{idle_timeout}</code>.</li>
+</ul>
+<h3 id="abuse-limits">Abuse limits</h3>
+<ul>
+<li><strong>Message rate:</strong> each connection is rate limited to <code>MSG_RATE_PER_SEC</code> messages per second (default 60), with bursts up to <code>MSG_BURST</code> (default 120).<ul>
+<li>Messages over the limit are dropped.</li>
+<li>A sender that stays over the limit for <code>MSG_RATE_GRACE_MS</code> (default 2 s) without recovering gets <code>Disconnect{rate_limited}</code>.</li>
+</ul>
+</li>
+<li><strong>Character requests:</strong> one at a time per client. A request sent while another is in flight gets <code>CharError{rate_limited}</code>.</li>
+<li><strong>Send buffer:</strong> a client that stops reading and lets more than <code>MAX_SEND_BUFFER_BYTES</code> pile up is dropped without a reason.</li>
+<li><strong>Connection limit:</strong> a connection beyond <code>MAX_CONNECTIONS</code> completes TLS, then gets <code>Disconnect{server_full}</code>.</li>
+</ul>
+<h2 id="messages">Messages</h2>
+<p>C = client to server, S = server to client, L = the internal link between a world server and the chat service, A = the world server's <a href="#admin">admin port</a> (<code>LinkHello</code> / <code>LinkOk</code> open it too).
+"(chat)": a message of the <a href="../chat/protocol.html">chat service</a>'s own connection, never sent to or by the world server. "Payload" lists fields in wire order.</p>
+<table>
+<thead>
+<tr>
+<th>Opcode</th>
+<th>Name</th>
+<th>Dir</th>
+<th>Payload</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0x0001</code></td>
+<td>Hello</td>
+<td>C</td>
+<td><code>u16 protocolVersion</code></td>
+</tr>
+<tr>
+<td><code>0x0002</code></td>
+<td>Auth</td>
+<td>C</td>
+<td><code>str accessToken</code> (auth-service JWT)</td>
+</tr>
+<tr>
+<td><code>0x0003</code></td>
+<td>Ping</td>
+<td>C/S</td>
+<td><code>u32 nonce</code></td>
+</tr>
+<tr>
+<td><code>0x0004</code></td>
+<td>Pong</td>
+<td>C/S</td>
+<td><code>u32 nonce</code> (echoes the Ping)</td>
+</tr>
+<tr>
+<td><code>0x0010</code></td>
+<td>CharListReq</td>
+<td>C</td>
+<td><em>(empty)</em></td>
+</tr>
+<tr>
+<td><code>0x0011</code></td>
+<td>CharCreate</td>
+<td>C</td>
+<td><code>str name, options</code></td>
+</tr>
+<tr>
+<td><code>0x0012</code></td>
+<td>CharDelete</td>
+<td>C</td>
+<td><code>u64 charId</code></td>
+</tr>
+<tr>
+<td><code>0x0013</code></td>
+<td>EnterWorld</td>
+<td>C</td>
+<td><code>u64 charId</code></td>
+</tr>
+<tr>
+<td><code>0x0020</code></td>
+<td>Move</td>
+<td>C</td>
+<td><code>vec3 pos, f32 heading, u32 clientTimeMs</code></td>
+</tr>
+<tr>
+<td><code>0x0021</code></td>
+<td>Say</td>
+<td>C</td>
+<td><code>u8 kind</code> (0 say, 1 yell, 2 emote; another value is malformed), <code>str text</code> (UTF-8). See <a href="#proximity-chat">Proximity chat</a></td>
+</tr>
+<tr>
+<td><code>0x0022</code></td>
+<td>ClientEvent</td>
+<td>C</td>
+<td><code>str name, str json</code> (a named event for the server's Lua systems, see <a href="#client-events">Client events</a>)</td>
+</tr>
+<tr>
+<td><code>0x0023</code></td>
+<td>Interact</td>
+<td>C</td>
+<td><code>u32 objectId</code> (activates an interactable map object, see <a href="#interact">Interact</a>)</td>
+</tr>
+<tr>
+<td><code>0x0030</code></td>
+<td>ChatSend</td>
+<td>C (chat)</td>
+<td><code>u8 target</code> (0 whisper, 1 channel, 2 zone), <code>str to, str text</code>. To the <a href="../chat/protocol.html">chat service</a>, never the world server</td>
+</tr>
+<tr>
+<td><code>0x0031</code></td>
+<td>ChatJoin</td>
+<td>C (chat)</td>
+<td><code>str channel</code></td>
+</tr>
+<tr>
+<td><code>0x0032</code></td>
+<td>ChatLeave</td>
+<td>C (chat)</td>
+<td><code>str channel</code></td>
+</tr>
+<tr>
+<td><code>0x0033</code></td>
+<td>ChatIgnore</td>
+<td>C (chat)</td>
+<td><code>str name, u8 on</code></td>
+</tr>
+<tr>
+<td><code>0x0034</code></td>
+<td>ChatMute</td>
+<td>C (chat)</td>
+<td><code>str name, u32 minutes</code> (0: unmute; GM / admin only)</td>
+</tr>
+<tr>
+<td><code>0x0102</code></td>
+<td>AuthOk</td>
+<td>S</td>
+<td><code>u64 accountId, u8 role</code> (0 player, 1 gm, 2 admin)</td>
+</tr>
+<tr>
+<td><code>0x0103</code></td>
+<td>Disconnect</td>
+<td>S</td>
+<td><code>u16 reason</code> (code table below); the server closes after sending it</td>
+</tr>
+<tr>
+<td><code>0x0110</code></td>
+<td>CharList</td>
+<td>S</td>
+<td><code>u8 count</code>, then <code>count</code> × CharInfo</td>
+</tr>
+<tr>
+<td><code>0x0111</code></td>
+<td>CharCreated</td>
+<td>S</td>
+<td>CharInfo</td>
+</tr>
+<tr>
+<td><code>0x0112</code></td>
+<td>CharDeleted</td>
+<td>S</td>
+<td><code>u64 charId</code></td>
+</tr>
+<tr>
+<td><code>0x0113</code></td>
+<td>EnterWorldOk</td>
+<td>S</td>
+<td><code>u32 entityId, u16 map, vec3 pos, f32 heading</code> (<code>map</code>: the map's id, see below)</td>
+</tr>
+<tr>
+<td><code>0x0114</code></td>
+<td>CharError</td>
+<td>S</td>
+<td><code>u16 requestOpcode, u16 code</code>; the request failed, the connection stays open</td>
+</tr>
+<tr>
+<td><code>0x0120</code></td>
+<td>Spawn</td>
+<td>S</td>
+<td><code>u32 entityId, str name, vec3 pos, f32 heading, u8 kind</code> (0 player, 1 npc), <code>str template</code> (an NPC's client template; empty for players)</td>
+</tr>
+<tr>
+<td><code>0x0121</code></td>
+<td>Despawn</td>
+<td>S</td>
+<td><code>u32 entityId</code></td>
+</tr>
+<tr>
+<td><code>0x0122</code></td>
+<td>EntityMoves</td>
+<td>S</td>
+<td><code>u16 count</code>, then <code>count</code> &times; (<code>u32 entityId, vec3 pos, f32 heading</code>), at most 3276 (<code>kMaxEntries</code>, under the 64 KB frame); a count past the payload, or more than that, is malformed</td>
+</tr>
+<tr>
+<td><code>0x0123</code></td>
+<td>Correction</td>
+<td>S</td>
+<td><code>vec3 pos</code> (snap back to the last valid position)</td>
+</tr>
+<tr>
+<td><code>0x0124</code></td>
+<td>ChatMsg</td>
+<td>S</td>
+<td><code>u8 kind, str fromName, str text</code></td>
+</tr>
+<tr>
+<td><code>0x0125</code></td>
+<td>ComponentUpdate</td>
+<td>S</td>
+<td><code>u32 entityId, str name, str json</code> (a Lua component's full value, see below)</td>
+</tr>
+<tr>
+<td><code>0x0126</code></td>
+<td>ComponentRemove</td>
+<td>S</td>
+<td><code>u32 entityId, str name</code></td>
+</tr>
+<tr>
+<td><code>0x0127</code></td>
+<td>ServerEvent</td>
+<td>S</td>
+<td><code>str name, str json</code> (a named event a Lua system sent, see below)</td>
+</tr>
+<tr>
+<td><code>0x0128</code></td>
+<td>MapChange</td>
+<td>S</td>
+<td><code>u16 map, vec3 pos, f32 heading</code> (you were moved: to another map, or within yours)</td>
+</tr>
+<tr>
+<td><code>0x0129</code></td>
+<td>Reply</td>
+<td>S</td>
+<td><code>u32 requestId, u8 ok, str json</code> (the answer to a <code>ClientEvent</code> with a <code>requestId</code>)</td>
+</tr>
+<tr>
+<td><code>0x012A</code></td>
+<td>ChatServer</td>
+<td>S</td>
+<td><code>str host, u16 port</code>: where the realm's chat service listens (<code>CHAT_PUBLIC_HOST</code> / <code>CHAT_PUBLIC_PORT</code>), right after <code>EnterWorldOk</code>; not sent without <code>CHAT_PUBLIC_HOST</code></td>
+</tr>
+<tr>
+<td><code>0x0130</code></td>
+<td>ChatLine</td>
+<td>S (chat)</td>
+<td><code>u8 target</code> (0 whisper, 1 channel, 2 zone, 3 whisper_sent), <code>str channel, str name, str text</code></td>
+</tr>
+<tr>
+<td><code>0x0131</code></td>
+<td>ChatChannel</td>
+<td>S (chat)</td>
+<td><code>u8 number, str channel, u8 joined</code></td>
+</tr>
+<tr>
+<td><code>0x0132</code></td>
+<td>ChatNotice</td>
+<td>S</td>
+<td><code>u8 code, str name, u32 minutes</code>; from the world server only <code>muted</code> (a dropped say, yell or emote). Codes: <a href="../chat/protocol.html#notices">chat service protocol</a></td>
+</tr>
+<tr>
+<td><code>0x0200</code></td>
+<td>LinkHello</td>
+<td>L</td>
+<td><code>u16 protocolVersion, str secret</code>: world server to chat service, first on the <a href="../chat/protocol.html#link">internal link</a></td>
+</tr>
+<tr>
+<td><code>0x0201</code></td>
+<td>LinkOk</td>
+<td>L</td>
+<td>(empty): chat service to world server</td>
+</tr>
+<tr>
+<td><code>0x0202</code></td>
+<td>CharOnline</td>
+<td>L</td>
+<td><code>u64 accountId, u64 charId, str name, u16 map</code></td>
+</tr>
+<tr>
+<td><code>0x0203</code></td>
+<td>MapChanged</td>
+<td>L</td>
+<td><code>u64 charId, u16 map</code></td>
+</tr>
+<tr>
+<td><code>0x0204</code></td>
+<td>CharOffline</td>
+<td>L</td>
+<td><code>u64 charId</code></td>
+</tr>
+<tr>
+<td><code>0x0205</code></td>
+<td>MuteState</td>
+<td>L</td>
+<td><code>str name, u64 untilMs</code> (Unix ms; 0: not muted)</td>
+</tr>
+<tr>
+<td><code>0x0300</code></td>
+<td>AdminOnlineReq</td>
+<td>A</td>
+<td>(empty): who is online (<a href="#admin">admin port</a>)</td>
+</tr>
+<tr>
+<td><code>0x0301</code></td>
+<td>AdminOnline</td>
+<td>A</td>
+<td><code>u8 more, u16 count</code>, then <code>count</code> &times; (<code>u64 accountId, u64 charId, str name, u16 map, u32 sessionId, u64 connectedAtMs</code>); <code>more</code> 1: another chunk follows</td>
+</tr>
+<tr>
+<td><code>0x0302</code></td>
+<td>AdminKick</td>
+<td>A</td>
+<td><code>u64 accountId, u64 charId, str reason</code>; exactly one id non-zero</td>
+</tr>
+<tr>
+<td><code>0x0303</code></td>
+<td>AdminKicked</td>
+<td>A</td>
+<td><code>u32 kicked</code>: sessions disconnected</td>
+</tr>
+<tr>
+<td><code>0x0304</code></td>
+<td>AdminInstancesReq</td>
+<td>A</td>
+<td>(empty): the live map contexts (<a href="#admin">admin port</a>, admin protocol 10)</td>
+</tr>
+<tr>
+<td><code>0x0305</code></td>
+<td>AdminInstances</td>
+<td>A</td>
+<td><code>u8 more, u16 count</code>, then <code>count</code> &times; (<code>u16 map, str mapName, u32 instance, str key, u32 players, u32 npcs, u64 createdAtMs, u64 emptySinceMs</code>); <code>more</code> 1: another chunk follows</td>
+</tr>
+</tbody>
+</table>
+<p><strong>CharInfo:</strong> <code>u64 id, str name, vec3 pos, options</code> (the options the character was created with).</p>
+<p><strong>options:</strong> <code>u8 count</code>, then <code>count</code> × (<code>str key, str value</code>), keys in ascending byte order. A key twice is <code>malformed</code>.</p>
+<p>Any other opcode, including a server-to-client opcode sent by a client, gets <code>Disconnect{unknown_opcode}</code> or <code>Disconnect{unexpected_message}</code>.</p>
+<h3 id="characters">Characters</h3>
+<ul>
+<li><strong>Name rules:</strong> <code>CharCreate</code> names are 3–16 ASCII letters (<code>name_invalid</code> otherwise).</li>
+<li><strong>Creation options:</strong> string pairs the game defines (a class, a look); the protocol and the client only carry them. The server takes at most 8, each key 1–16 characters of <code>[a-z_]</code> and each value at most 32 printable ASCII characters (<code>0x20</code>–<code>0x7E</code>); anything else is <code>options_invalid</code>, before any Lua runs. Then the server Lua's <code>validateCharacter</code> decides (<a href="lua.html#character-creation">Lua: character creation</a>); without one, only empty options pass. Accepted options are saved with the character (column <code>options</code>, migration 004) and come back in every <code>CharInfo</code>.</li>
+<li><strong>Uniqueness:</strong> names are unique per realm, case-insensitively (<code>name_taken</code>). A deleted character's name stays reserved.</li>
+<li><strong>Character limit:</strong> at most <code>MAX_CHARS_PER_ACCOUNT</code> (default 10) live characters per account per realm (<code>char_limit</code>).</li>
+<li><strong>Spawn point:</strong> new characters start on map <code>START_MAP</code> (default 1) at its <code>map.json</code> spawn.</li>
+<li><strong>Ownership:</strong> <code>CharDelete</code> (a soft delete) and <code>EnterWorld</code> only work on the caller's own live characters. Anything else gets <code>not_found</code>, whether the character doesn't exist, belongs to another account or is deleted.</li>
+<li><strong>Database down:</strong> every character request answers <code>CharError{service_unavailable}</code> while the database is down.</li>
+</ul>
+<h3 id="movement">Movement</h3>
+<ul>
+<li><strong>Sending moves:</strong> the client sends <code>Move</code> with its new position. The server validates it on the next tick (20 Hz).</li>
+<li><strong>Bounds:</strong><ul>
+<li>x/z must be on a tile the player's map declares (see <a href="#maps">Maps</a>); x = 256 is already tile 1.</li>
+<li>y does not count toward speed. It is checked against the ground under the new x/z (<a href="maps.html#ground">Maps, Ground</a>): more than
+  <code>MOVE_GROUND_TOLERANCE</code> (0.5 m) below it is lifted onto it, and a move ending more than <code>MOVE_MAX_AIR</code> (6 m) above
+  it is rejected unless it descends (falling is always allowed). Then y is clamped to <code>[MIN_Y, MAX_Y]</code>.</li>
+</ul>
+</li>
+<li><strong>Speed:</strong><ul>
+<li><strong>Budget:</strong> distance on the x/z plane is paid from a budget. It refills at <code>MAX_SPEED + SPEED_TOLERANCE</code> m/s (default 10 + 1) of server time and is capped at <code>MOVE_BURST_SECONDS</code> (default 1 s) of travel.</li>
+<li><strong>Effect:</strong> packet timing jitter is absorbed, but sustained speed can never exceed the limit.</li>
+<li><strong>Client clock:</strong> <code>clientTimeMs</code> is informational. The server only trusts its own clock.</li>
+</ul>
+</li>
+<li><strong>Rejected moves:</strong> the move is dropped, the client gets one <code>Correction</code> per tick with its last valid position, and observers see nothing.</li>
+<li><strong>Accepted moves:</strong> go to observers in range, never back to the mover. Each tick a player gets one
+  <code>EntityMoves</code> with every move it sees (players' and NPCs'), at the point in the tick where they are sent, or
+  none if nothing it sees moved. A list longer than <code>kMaxEntries</code> goes as several in a row. This saves a message, an
+  encode and a frame header per move, but the bytes are still 20 per move per viewer: O(movers &times; viewers) a tick.
+  Quantized or delta-encoded entries, or a lower rate for far viewers, are the next step if bandwidth matters.</li>
+</ul>
+<h3 id="interest-management">Interest management</h3>
+<ul>
+<li><strong>Grid:</strong> a uniform grid with <code>AOI_CELL_SIZE</code> m cells (default 64). A player sees every other player and every NPC on the same map within <code>AOI_VIEW_RADIUS</code> m (default 128) on the x/z plane. Entities on other maps are never seen, whatever their x/z.</li>
+<li><strong>Updates:</strong> each tick, a player gets <code>Spawn</code> for anyone who came into range and <code>Despawn</code> for anyone who left, logged out or (an NPC) was destroyed.</li>
+<li><strong>Skip rule (server cost only):</strong> the grid remembers every cell touched since the last pass (a move in or between cells, a spawn, despawn,
+  NPC create / destroy or transfer, including Lua NPC moves after the pass). A player whose view window covers no touched cell, its own
+  included, keeps its view without a recompute; what clients get is exactly what a full recompute would send.</li>
+<li><strong>NPCs:</strong> server-side entities that Lua systems create, move and destroy (<a href="lua.html">Lua components and systems</a>). Their <code>Spawn</code> has <code>kind</code> 1 and the <code>template</code> the system chose; a client shows them however it likes (for example as a clone of a scene entity of that name). Their moves arrive in <code>EntityMoves</code>, like a player's. NPCs see nothing themselves.</li>
+<li><strong>Entity ids:</strong> <code>entityId</code> is valid only while the entity exists. A later entity may reuse its slot with a different id.</li>
+</ul>
+<h3 id="maps">Maps</h3>
+<ul>
+<li><strong>Model:</strong> the world is a set of maps (continents, dungeons), each made of 256 m tiles. Tile <code>(tx, tz)</code> holds x/z
+  in <code>[256 tx, 256 (tx + 1))</code>; the map's origin is the corner of tile (0, 0). Coordinates: y up, metres,
+  <code>heading = atan2(dx, dz)</code> (0 faces +z). A map is identified by its <code>u16</code> id (<code>map.json</code> <code>id</code>, <a href="maps.html">Maps</a>).</li>
+<li><strong>Entering:</strong> <code>EnterWorldOk.map</code> is the map the character is on. Load it before showing the world.</li>
+<li><strong><code>MapChange</code>:</strong> the server moved you (a portal, a script). Drop every remote entity you know, load <code>map</code> if it
+  differs, and place yourself at <code>pos</code> / <code>heading</code>. It is sent at once, so it always arrives before the <code>Despawn</code>s of
+  your old neighbours and the <code>Spawn</code>s of your new ones (both on the next tick). A <code>Move</code> you sent before it arrived is
+  checked from the new position with an empty speed budget, so it gets <code>Correction</code>.</li>
+<li><strong>Others:</strong> a player who changes map is a plain <code>Despawn</code> to its old neighbours and a <code>Spawn</code> to its new ones.</li>
+<li><strong>Instances:</strong> every copy of an <a href="instances.html">instance map</a> has the map's id, so entering one is a <code>MapChange</code> to that id
+  like any map change; the wire does not name the copy. A move from one copy to another of the same map (only through
+  <code>chthonic.transfer</code> with another <code>instance</code> key) is a <code>MapChange</code> with the same map id: the client keeps the map loaded and
+  places itself again, and the <code>Despawn</code>s and <code>Spawn</code>s swap the old copy's entities for the new one's. A transfer refused
+  because the copy is full sends nothing.</li>
+</ul>
+<h3 id="proximity-chat">Proximity chat (say, yell, emote)</h3>
+<p>The world server owns proximity chat; whispers, channels and the zone channel are the <a href="../chat/index.html">chat service</a>'s.</p>
+<ul>
+<li><strong>Delivery:</strong> <code>Say{kind, text}</code> goes to the sender and back as <code>ChatMsg{kind, fromName, text}</code>: <code>say</code> to everyone in view (the AOI audience), <code>yell</code> to every player on the same map within <code>CHAT_YELL_RADIUS</code> (default 300 m, x/z; it may reach past the view radius), <code>emote</code> to the say audience, shown as "<em>Name</em> <em>text</em>" (<code>/me waves</code>: "Alice waves").</li>
+<li><strong>Muted characters:</strong> while the chat service has the character muted (its <code>MuteState</code>s over the link), a say, yell or emote is dropped and the sender gets <code>ChatNotice{muted, "", minutes left}</code>. With the link down, the last mutes it sent stay in force until they end.</li>
+<li><strong>Where chat is:</strong> right after <code>EnterWorldOk</code> the server sends <code>ChatServer{host, port}</code> (when <code>CHAT_PUBLIC_HOST</code> is set); the client opens a second TLS connection there with the same access token. See <a href="../chat/protocol.html">Chat service protocol</a>.</li>
+<li><strong>Size:</strong> the text must be valid UTF-8 and at most <code>CHAT_MAX_BYTES</code> (default 256) bytes.</li>
+<li><strong>Control characters:</strong> C0, DEL and C1 are stripped.</li>
+<li><strong>Rate limit:</strong> <code>CHAT_RATE_COUNT</code> per <code>CHAT_RATE_WINDOW_MS</code> (default 5 per 10 s). Rejected messages count toward it.</li>
+<li><strong>Rejected messages</strong> (invalid, too long or over the rate) are dropped silently. The chat service applies the same rules (the same code, <code>sanitize_chat</code> and <code>WindowLimiter</code>) and answers with a <code>ChatNotice</code> instead.</li>
+</ul>
+<h3 id="client-events">Client events</h3>
+<p>A client sends a named event to the server's Lua systems as <code>ClientEvent</code> (<code>chthonic.world.send(name, data)</code> on the client). It is client-to-server only and the reverse of
+<a href="#server-events">Server events</a>.</p>
+<ul>
+<li><strong><code>name</code>:</strong> 1–32 characters of <code>a-z</code>, <code>0-9</code>, <code>.</code> and <code>_</code> (<code>kClientEventNameMax</code>, <code>proto::valid_client_event_name</code>), e.g. <code>combat.power</code>.</li>
+<li><strong><code>json</code>:</strong> the payload as JSON, at most 1024 bytes (<code>kClientEventJsonMax</code>). It must parse to an object.</li>
+<li><strong>Validation:</strong> the server re-checks everything. A bad name, more than 1 KB, text that isn't JSON or JSON that isn't an
+  object gets <code>Disconnect{malformed}</code>, like any other malformed frame.</li>
+<li><strong>Phase:</strong> only accepted in the world. In the lobby it is ignored, like a stale <code>Move</code> or <code>Say</code>.</li>
+<li><strong>Rate limit:</strong> 10 per 1 s window per character (<code>WorldRules</code> <code>clientEventRateCount</code> /
+  <code>clientEventRateWindow</code>, not configurable). Events over the limit are dropped silently and counted; the count is logged as
+  <code>"client events dropped" {char, count}</code> when the character leaves. This is on top of the connection's
+  <a href="#abuse-limits">message rate</a>.</li>
+<li><strong>Delivery:</strong> on the next tick, after chat and before the spawner and the Lua update, each event is published on the Lua bus as
+  <code>client.&lt;name&gt;</code> with the payload <code>{entity = &lt;sender's character entity id&gt;, data = &lt;the object as a table&gt;}</code>, in
+  arrival order. The bus drain right after that tick's Lua update delivers it (<a href="lua.html#client-events">Lua, Client events</a>).</li>
+<li><strong>Trust:</strong> <code>data</code> comes from the client. Handlers must check every field (<a href="security.html#client-events">Security, Client events</a>).</li>
+</ul>
+<h3 id="interact">Interact</h3>
+<p>A client activates an interactable map object (a shrine, a lever) with <code>Interact{u32 objectId}</code>: the object's <code>id</code> from
+the map's <code>objects/&lt;tx&gt;_&lt;tz&gt;.json</code> (<code>chthonic.interact(id)</code> on the client).
+Client-to-server only.</p>
+<ul>
+<li><strong>Check:</strong> on the next tick, the id must be an interactable of the player's current map (its
+  <code>.server/interactables</code> entry, <a href="maps.html#objects">Maps, Objects</a>) and the player within its <code>range</code> of the shape's
+  edge, measured on the ground plane.</li>
+<li><strong>Accepted:</strong> the object's <code>event</code> is published on the server bus as <code>{entity, map, object, data}</code>
+  (<a href="events.html#interactables">Events, Interactables</a>).</li>
+<li><strong>Rejected</strong> (unknown id, another map's object, out of range): dropped silently, logged at debug level as
+  <code>interact rejected</code>. There is no reply message; the game's Lua answers an accepted one if it wants to (with
+  <a href="#server-events">Server events</a>).</li>
+<li><strong>Phase and limits:</strong> only accepted in the world (in the lobby it is ignored, like a stale <code>Move</code>), and counted by the
+  connection's <a href="#abuse-limits">message rate</a>.</li>
+</ul>
+<h3 id="lua-components">Lua components</h3>
+<p>Game-defined Lua components (<a href="lua.html">Lua components and systems</a>) reach clients as these two messages. They are
+server-authoritative: there is no client-to-server component message, and a client that sends one gets
+<code>Disconnect{unexpected_message}</code>.</p>
+<ul>
+<li><strong><code>ComponentUpdate</code>:</strong> the component's full value as a JSON object, in its canonical encoding:<ul>
+<li>fields in definition order, floats as the shortest decimal that reads back as the same <code>f32</code>, ints as integers;</li>
+<li><code>vec3</code> / <code>quat</code> as arrays <code>[x, y, z]</code> / <code>[x, y, z, w]</code>, enums by name, arrays as JSON arrays.</li>
+</ul>
+</li>
+<li><strong><code>ComponentRemove</code>:</strong> the entity no longer has the component.</li>
+<li><strong>Who gets them,</strong> by the definition's <code>replicate</code> key:<ul>
+<li><code>"owner"</code>: only the owning player's session. An NPC has no owner, so nobody.</li>
+<li><code>"aoi"</code>: the owner and every session that currently sees the entity.</li>
+<li><code>"none"</code> (the default): never sent.</li>
+</ul>
+</li>
+<li><strong>When:</strong> at most once per component per tick (20 Hz), after the Lua systems ran, and only if the value differs from what was last sent. Unchanged components are never resent.<ul>
+<li>The owner gets every replicated component it has on the first tick after <code>EnterWorldOk</code>.</li>
+<li>A viewer gets every <code>"aoi"</code> component of an entity on the tick that entity comes into view, after its <code>Spawn</code>. That full set replaces the tick's changes for that viewer.</li>
+</ul>
+</li>
+<li><strong>Ordering:</strong> for any entity, <code>ComponentUpdate</code> / <code>ComponentRemove</code> come after its <code>Spawn</code> (or the owner's <code>EnterWorldOk</code>) and never after its <code>Despawn</code>.</li>
+<li><strong>Size:</strong> a component whose frame would pass the <code>u16</code> length limit (65535-byte payload) is not sent. The server logs an error once, until the value fits again.</li>
+<li><strong>Bandwidth:</strong> each change is sent in full. A component that changes every tick (e.g. regenerating health) costs one message per tick for each recipient.</li>
+</ul>
+<h3 id="server-events">Server events</h3>
+<p>A server Lua system sends a named event to clients with <code>chthonic.sendTo</code>, <code>chthonic.sendNearby</code> or <code>chthonic.broadcast</code> (<a href="lua.html">Lua components and systems</a>,
+<a href="events.html">Events</a>). Each recipient gets one <code>ServerEvent</code>. It is server-to-client only: a client
+that sends one gets <code>Disconnect{unexpected_message}</code>.</p>
+<ul>
+<li><strong><code>name</code>:</strong> the non-empty name the system chose, e.g. <code>player.left</code>. A client publishes it as <code>server.&lt;name&gt;</code>.</li>
+<li><strong><code>json</code>:</strong> the payload as compact JSON: any plain-data value (<code>null</code> when the system sent none). Bytes in Lua
+  strings that aren't UTF-8 are replaced with U+FFFD.</li>
+<li><strong>Who gets it:</strong><ul>
+<li><code>sendTo(e, ...)</code>: the session of character <code>e</code>. An NPC has no session: nobody.</li>
+<li><code>sendNearby(e, ...)</code>: <code>e</code>'s session and every session that currently sees <code>e</code> (the <code>"aoi"</code> audience). For an NPC,
+  the sessions that see it.</li>
+<li><code>broadcast(...)</code>: every player in the zone.</li>
+<li>The audience is taken when the event is sent, not when the system queued it. A character no longer in the world
+  gets nothing, and neither does anyone around it.</li>
+</ul>
+</li>
+<li><strong>When:</strong> once per tick, after <code>ComponentUpdate</code> / <code>ComponentRemove</code>, in the order the systems queued them. So a
+  client already has the <code>Spawn</code> and the latest component values of any entity the event refers to. Events queued in
+  <code>onLeave</code> go out at the despawn, before that character's <code>Despawn</code>; events queued in <code>onEnter</code> go out on the next tick.</li>
+<li><strong>Ordering:</strong> no <code>ServerEvent</code> about or to an entity comes before its <code>Spawn</code> (or the owner's <code>EnterWorldOk</code>) or
+  after its <code>Despawn</code>.</li>
+<li><strong>Size:</strong> the frame must fit the <code>u16</code> length limit: <code>4 + name + json</code> bytes at most 65535. A bigger event is
+  rejected by the Lua call with an error; nothing is sent.</li>
+<li><strong>Bandwidth:</strong> each event is one message per recipient. <code>broadcast</code> reaches every player, so one call costs N
+  messages in a zone of N players, and a call per player costs N².</li>
+</ul>
+<h2 id="codes">Codes</h2>
+<p>Used in <code>Disconnect.reason</code> (D) and <code>CharError.code</code> (E).</p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Name</th>
+<th>Where</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td><code>ok</code></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>protocol_mismatch</code></td>
+<td>D</td>
+<td><code>Hello.protocolVersion</code> is not 5</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>malformed</code></td>
+<td>D</td>
+<td>Payload doesn't decode exactly (short, trailing bytes, bad enum, NaN)</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>unknown_opcode</code></td>
+<td>D</td>
+<td>Opcode not in the table</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>frame_too_large</code></td>
+<td>D</td>
+<td>Frame <code>length</code> over <code>MAX_FRAME_BYTES</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>rate_limited</code></td>
+<td>D, E</td>
+<td>Message rate exceeded for too long; or a character request already in flight</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>handshake_timeout</code></td>
+<td>D</td>
+<td>No <code>AuthOk</code> within <code>HANDSHAKE_TIMEOUT_MS</code></td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>idle_timeout</code></td>
+<td>D</td>
+<td>Nothing received for <code>IDLE_TIMEOUT_MS</code></td>
+</tr>
+<tr>
+<td>8</td>
+<td><code>invalid_token</code></td>
+<td>D</td>
+<td>Token unparsable, not RS256, unknown <code>kid</code>, bad signature, wrong <code>iss</code>/<code>aud</code>, bad claims</td>
+</tr>
+<tr>
+<td>9</td>
+<td><code>token_expired</code></td>
+<td>D</td>
+<td>Token <code>exp</code> passed (beyond <code>JWT_CLOCK_SKEW_SECONDS</code>)</td>
+</tr>
+<tr>
+<td>10</td>
+<td><code>service_unavailable</code></td>
+<td>D, E</td>
+<td>JWKS can't be fetched (D); database unavailable (E)</td>
+</tr>
+<tr>
+<td>11</td>
+<td><code>logged_in_elsewhere</code></td>
+<td>D</td>
+<td>The same account logged in again</td>
+</tr>
+<tr>
+<td>12</td>
+<td><code>server_shutdown</code></td>
+<td>D</td>
+<td>Graceful shutdown</td>
+</tr>
+<tr>
+<td>13</td>
+<td><code>server_full</code></td>
+<td>D</td>
+<td><code>MAX_CONNECTIONS</code> reached</td>
+</tr>
+<tr>
+<td>14</td>
+<td><code>unexpected_message</code></td>
+<td>D</td>
+<td>Valid message in the wrong state, e.g. <code>Move</code> before <code>Auth</code></td>
+</tr>
+<tr>
+<td>20</td>
+<td><code>name_taken</code></td>
+<td>E</td>
+<td>Name in use in this realm (any case, including deleted characters)</td>
+</tr>
+<tr>
+<td>21</td>
+<td><code>name_invalid</code></td>
+<td>E</td>
+<td>Not 3–16 ASCII letters</td>
+</tr>
+<tr>
+<td>22</td>
+<td><code>char_limit</code></td>
+<td>E</td>
+<td>Account already has <code>MAX_CHARS_PER_ACCOUNT</code> live characters</td>
+</tr>
+<tr>
+<td>23</td>
+<td><code>not_found</code></td>
+<td>E</td>
+<td>No such live character on this account</td>
+</tr>
+<tr>
+<td>24</td>
+<td><code>already_in_world</code></td>
+<td>E</td>
+<td>Character request sent while in the world</td>
+</tr>
+<tr>
+<td>25</td>
+<td><code>options_invalid</code></td>
+<td>E</td>
+<td><code>CharCreate</code> options over the limits, or refused by the server's Lua</td>
+</tr>
+<tr>
+<td>26</td>
+<td><code>no_character</code></td>
+<td>D</td>
+<td>Chat service: the account has no character in a world (after <code>CHAT_BIND_TIMEOUT_MS</code>), or its character left</td>
+</tr>
+<tr>
+<td>27</td>
+<td><code>kicked</code></td>
+<td>D</td>
+<td>An admin kicked this session through the <a href="#admin">admin port</a>; the character was saved first</td>
+</tr>
+</tbody>
+</table>
+<h2 id="admin">Admin port</h2>
+<p>An internal TLS listener for the admin service (<code>WORLD_ADMIN_HOST</code>:<code>WORLD_ADMIN_PORT</code>, default <code>127.0.0.1:7780</code>), on only when <code>WORLD_ADMIN_SECRET</code> is set (<a href="configuration.html">configuration</a>, <a href="security.html#admin-port">security</a>). Same TLS context and certificate as the game port, same <a href="#frame">frames</a> and field types; messages marked A in the <a href="#messages">table</a>.</p>
+<pre><code>admin tool                               world server
+  |---- TCP connect + TLS ------------------&gt;|   handshake deadline (HANDSHAKE_TIMEOUT_MS)
+  |---- LinkHello{protocolVersion, secret} -&gt;|   wrong version -&gt; Disconnect{protocol_mismatch}
+  |                                          |   wrong secret  -&gt; logged, Disconnect{invalid_token}
+  |&lt;--- LinkOk -------------------------------|   deadline cleared
+  |---- AdminOnlineReq ----------------------&gt;|
+  |&lt;--- AdminOnline{more=1, ...} -------------|   chunks of up to 1000 entries
+  |&lt;--- AdminOnline{more=0, ...} -------------|   last (or only, possibly empty) chunk
+  |---- AdminKick{accountId | charId, reason}&gt;|
+  |&lt;--- AdminKicked{kicked} ------------------|
+  |---- AdminInstancesReq -------------------&gt;|
+  |&lt;--- AdminInstances{more=1, ...} ----------|   chunks of up to 100 entries
+  |&lt;--- AdminInstances{more=0, ...} ----------|   last (or only) chunk
+</code></pre>
+<ul>
+<li><strong>Hello:</strong> the first message must be <code>LinkHello</code> (the chat link's hello, <code>0x0200</code>) with <code>protocolVersion</code> = the admin port's own version (<code>kAdminProtocolVersion</code>, 10; it was the game's 9 before the instance list) and <code>secret</code> = <code>WORLD_ADMIN_SECRET</code>. The game protocol and the chat link stay on <code>kProtocolVersion</code> (9). Anything else first gets <code>Disconnect{unexpected_message}</code>.</li>
+<li><strong>Requests:</strong> after <code>LinkOk</code>, any number of <code>AdminOnlineReq</code>, <code>AdminKick</code> and <code>AdminInstancesReq</code>, answered in order on the same connection. Any other message gets <code>Disconnect{unexpected_message}</code>; a bad payload <code>Disconnect{malformed}</code>.</li>
+<li><strong>Online list:</strong> every authenticated session. One in the lobby has <code>charId</code> 0, an empty name and map 0. <code>connectedAtMs</code> is when the TCP connection was accepted (Unix ms).</li>
+<li><strong>Kick:</strong> exactly one of <code>accountId</code> / <code>charId</code> is non-zero (both or neither: <code>malformed</code>). By account: every session of that account, lobby or world. By character: the session that has it in the world. Each one leaves the world as on a <a href="#handshake">duplicate login</a> (its save is queued), then gets <code>Disconnect{kicked}</code>. <code>kicked</code> counts them; 0 when nobody matched. The reason is logged, not sent to the player.</li>
+<li><strong>Instances:</strong> every live <a href="maps.html#map-contexts">map context</a>, in map then instance order: each world map's (instance 0, key empty) and every <a href="instances.html">instance copy</a> (its process-unique instanceId and its key, empty for a keyless copy). <code>players</code> and <code>npcs</code> are what it holds now, <code>createdAtMs</code> when it started (Unix ms), <code>emptySinceMs</code> when an empty copy's timer started (0: it has players, or a world map).</li>
+<li><strong>Heartbeat and limits:</strong> as for game clients: the server pings every <code>PING_INTERVAL_MS</code> and closes a connection idle for <code>IDLE_TIMEOUT_MS</code>; at most 32 admin connections (then <code>server_full</code>). One connection per request is fine.</li>
+</ul>
+</main>
+</div>
+</body>
+</html>

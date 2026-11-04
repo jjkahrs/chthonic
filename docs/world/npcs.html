@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NPCs - Chthonic World Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html" class="active">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="npcs">NPCs</h1>
+<p>A system creates server-authoritative NPCs with <code>chthonic.create</code>, moves them by setting their <code>Transform</code>, and removes them
+with <code>chthonic.destroy</code>. Clients see them through the usual interest management: a player in range gets <code>Spawn</code> with
+<code>kind</code> npc and the NPC's <code>template</code> (<a href="protocol.html#interest-management">protocol</a>), then its moves in <code>EntityMoves</code>,
+and <code>Despawn</code> when it leaves the view or is destroyed. A client shows each one however it likes, for example as a clone of a scene entity named
+after its template.</p>
+<pre><code class="language-lua">local guard = chthonic.create(&quot;Guard&quot;, {npc = &quot;Guard&quot;, position = {x = 1034, y = 0, z = 1024}, heading = 0})
+local boss = chthonic.create(&quot;Gate Boss&quot;, {npc = &quot;Guard&quot;, components = {Health = {max = 500, current = 500}}})
+local prop = chthonic.create(&quot;Crate&quot;, {template = &quot;Crate&quot;})            -- no definition, no components
+chthonic.set(guard, &quot;Transform&quot;, {position = {x = 1035, y = 0, z = 1024}}) -- an EntityMoves entry to every player who sees it
+chthonic.destroy(guard)                                                 -- Despawn to every player who sees it
+</code></pre>
+<ul>
+<li><strong><code>chthonic.create(name, opts)</code>:</strong> <code>name</code> (the <code>Npc.name</code> clients see) must be a non-empty string of at most 255 bytes.
+  <code>opts</code> needs exactly one of <code>npc</code> (an <a href="#npc-definitions">NPC definition</a>'s name: its <code>template</code> and components) and
+  <code>template</code> (non-empty, at most 255 bytes; no components); both or neither raises (<code>chthonic.create: opts needs exactly
+  one of npc (an npcs/ definition) and template</code>), as does an unknown <code>npc</code>. <code>components</code> has a definition's
+  <code>components</code> shape and is merged per field over the definition's data (or over the field defaults with <code>template</code>),
+  with the same checks (<code>chthonic.create: "Health": "current" must be &gt;= 0</code>). <code>map</code> defaults to the map of the context the
+  system runs in (<a href="maps.html#map-contexts">Map contexts</a>; <code>World::create_npc</code> from C++: <code>START_MAP</code>) and must be a loaded
+  map's id. On another map the NPC is created there at the end of the tick: its id is returned now, but it is not in this
+  context. <code>MAX_NPCS</code> counts every map's NPCs. <code>position</code> (<code>{x, y, z}</code>, finite numbers) defaults to that
+  map's spawn point and <code>heading</code> (radians) to 0. A position off the map is clamped to the nearest point on a declared
+  tile, and y is the <a href="maps.html#ground">ground</a> there (no flying NPCs). Any other key in <code>opts</code>, a bad value, or <code>MAX_NPCS</code> NPCs
+  already in the world raises an error at the call and creates nothing. It works from <code>init</code> on; the components are
+  there when it returns (a <code>StateMachine</code> has entered its initial state), and players in range get the <code>Spawn</code> on the
+  next tick, followed by its <code>aoi</code> components.</li>
+<li><strong><code>chthonic.destroy(e)</code>:</strong> a player id (<code>chthonic.destroy: entity 7 is a player; only NPCs can be destroyed</code>), a stale id or
+  an invalid id raises an error. A destroyed NPC's id is stale at once: <code>chthonic.*</code> on it raises <code>invalid entity id</code>.</li>
+<li><strong>Moving:</strong> <code>chthonic.set(npc, "Transform", {position = {x, y, z}, heading = h})</code> is partial and all-or-nothing like any
+  <code>set</code>, and clamps onto the NPC's map like <code>create</code>. <code>map</code> cannot be set (<code>"Transform": "map" is read-only; use
+  chthonic.transfer</code>). Script moves are trusted: there is no speed check. A move goes out in that
+  tick's <code>EntityMoves</code>, like an accepted player move. A move into or out of a player's view gives <code>Spawn</code> / <code>Despawn</code> on
+  the next tick.</li>
+<li><strong>Components and machines:</strong> <code>chthonic.add/set/get/has/remove</code>, and <code>StateMachine</code> with <code>chthonic.fsm.*</code>, work on NPCs as on
+  characters, whether the components came from a definition or a system. An <code>aoi</code> component reaches the players who see the NPC, an <code>owner</code> one nobody, and <code>persist</code> is ignored.</li>
+<li><strong>Events:</strong> <code>chthonic.sendTo(npc, ...)</code> sends nothing (no error); <code>chthonic.sendNearby(npc, ...)</code> reaches the players who see
+  it. <code>onEnter</code> and <code>onLeave</code> never run for NPCs.</li>
+<li><strong>Ephemeral:</strong> NPCs are never saved and need no database. A restart starts without them: the spawn files and the
+  systems' <code>init</code> create them again. A graceful shutdown removes them silently, after the players.</li>
+<li id="sleep"><strong>Sleep:</strong> an NPC on a tile no player is near (<a href="maps.html#tile-activation">tile activation</a>) is asleep, whether it came from a spawn file
+  or <code>chthonic.create</code>. <code>chthonic.query</code> never returns a sleeping NPC, so the systems that walk their NPCs with it leave it alone:
+  no patrol, no AI, no state machine changes. It keeps its components, state and position, and every other <code>chthonic.*</code>
+  works on it by id (<code>chthonic.get</code>, <code>chthonic.set</code>, <code>chthonic.fsm.change</code>, <code>chthonic.destroy</code>). It wakes, where it was, when a player
+  comes near. A system that keeps per-NPC state must not drop it when an NPC is missing from the query: the sample
+  <code>systems/npcs.lua</code> keeps a sleeping NPC's patrol (target, waited seconds) and checks a few entries a tick for NPCs that
+  are gone, so a Guard that falls asleep mid-walk goes on to the same point when it wakes, and a wait goes on where it
+  stopped instead of ending at once. Players still see a sleeping NPC; one they can see is never asleep anyway.</li>
+</ul>
+<p><strong>NPCs cost bandwidth like players.</strong> Each move is one 20-byte entry per tick in the <code>EntityMoves</code> of each
+player in view. A player gets one such message a tick however many movers it sees, but a crowd of walking NPCs around a
+crowd of players still costs NPCs x players entries a tick. Move NPCs at the rate clients need and let the client
+interpolate.</p>
+<h1 id="npc-definitions">NPC definitions</h1>
+<p>An NPC type is data: one file per type under <code>LUA_ROOT/npcs/</code> (scanned recursively), listing the Lua components every
+NPC of that type starts with. Spawn files (<code>npc</code>) and <code>chthonic.create</code> (<code>opts.npc</code>) make NPCs from them.</p>
+<pre><code class="language-lua">return {
+    name = &quot;Guard&quot;,          -- the NPC's Npc.name and Npc.npc
+    template = &quot;Guard&quot;,      -- the scene entity clients clone
+    components = {           -- optional; omitted: none
+        Health = { current = 50, max = 50 },   -- partial: unlisted fields take their defaults; {} is all defaults
+        StateMachine = { machine = &quot;patrol&quot; }, -- enters &quot;patrol&quot;'s initial state when the NPC is created
+    },
+    loot = {                 -- optional: what a system may roll when it dies (see below)
+        gold = { min = 5, max = 15 },
+        items = { { item = &quot;linen_cloth&quot;, chance = 0.6, min = 1, max = 2 } },
+    },
+}
+</code></pre>
+<ul>
+<li><strong>Keys:</strong> <code>name</code> (unique across <code>npcs/</code>) and <code>template</code> are required, non-empty strings of at most 255 bytes;
+  <code>components</code> and <code>loot</code> are optional. Any other key is an error.</li>
+<li id="npc-loot"><strong>Loot:</strong> <code>gold = {min, max}</code> (integers, <code>0 &lt;= min &lt;= max &lt;= 1000000</code>) and <code>items</code>, a sequence of
+  <code>{item, chance, min, max}</code>: <code>item</code> an <a href="lua.html#items">item definition</a>'s <code>id</code>, <code>chance</code> in <code>(0, 1]</code>,
+  <code>1 &lt;= min &lt;= max &lt;= 1000000</code>. Both parts are optional; other keys are errors. The server only checks and keeps it:
+  systems read it with <code>chthonic.npcDef(name).loot</code> and decide when and how to roll it (for example once
+  at death, <code>math.random</code>, for the player who hit the NPC first).</li>
+<li><strong>Components:</strong> any <a href="lua.html#component-definitions">Lua component</a>, and the writable built-in <code>StateMachine</code>, whose <code>machine</code>
+  must name a valid <a href="state-machines.html#state-machines">state machine</a>. The read-only built-ins (<code>Npc</code>, <code>Transform</code>, <code>Spawn</code>,
+  <code>Character</code>) and unknown names are errors. Field values are checked like <code>chthonic.set</code> (unknown field, wrong type,
+  min/max, enum values, array elements).</li>
+<li><strong>Loading:</strong> once at startup, after <code>fsms/</code> and <code>items/</code> and before the systems' <code>init</code>, in the definition sandbox. Every invalid
+  file is one <code>Lua error</code> starting with its path (<code>npcs/guard.lua: "Health": unknown field "hp"</code>) and refuses the
+  start. Two files with the same <code>name</code> are both rejected, each error naming the other file. A missing or empty <code>npcs/</code>
+  is fine.</li>
+<li><strong>When:</strong> an NPC gets its components when it is created, so the first <code>Spawn</code> a player gets is followed by its <code>aoi</code>
+  components in the usual AOI-enter full set. A respawned NPC starts with fresh definition data. <code>persist</code> is ignored
+  and <code>owner</code> components reach nobody, as for every NPC.</li>
+<li id="friendly-npcs"><strong>Friendly NPCs:</strong> the server has no hostile / friendly flag; what an NPC is depends on its
+  components and the systems. One convention: an NPC <em>without</em> <code>Health</code> is friendly, and the combat system refuses any attack aimed at
+  it, so such an NPC never fights, is never hurt and never dies; with no <code>loot</code> it drops nothing. A quest giver can be
+  just <code>{name = "Elder", template = "Elder"}</code>, placed by a spawn file without a path.</li>
+</ul>
+<h1 id="npc-spawns">NPC spawns</h1>
+<p>A map's NPCs are data: one file per tile, <code>&lt;MAP_ROOT&gt;/&lt;folder&gt;/.server/spawns/&lt;tx&gt;_&lt;tz&gt;.json</code>. The dot-folder keeps it
+server only (a client build that shares the folder should leave dot-folders out).</p>
+<pre><code class="language-json">{ &quot;version&quot;: 2,
+  &quot;paths&quot;: {&quot;gate_patrol&quot;: {&quot;loop&quot;: true, &quot;wait&quot;: 2,
+            &quot;points&quot;: [[1034, 0, 1034], [1034, 0, 1014], [1014, 0, 1014], [1014, 0, 1034]]}},
+  &quot;spawns&quot;: [
+    {&quot;id&quot;: &quot;guard_1&quot;, &quot;npc&quot;: &quot;Guard&quot;, &quot;pos&quot;: [1024, 0, 1024], &quot;heading&quot;: 0, &quot;respawnSec&quot;: 30, &quot;path&quot;: &quot;gate_patrol&quot;}
+  ]}
+</code></pre>
+<ul>
+<li><strong>Version:</strong> <code>version</code> must be <code>2</code>. A version 1 file (<code>name</code> / <code>template</code> per spawn) is rejected: replace both with
+  <code>npc</code>.</li>
+<li><strong>Spawn:</strong> <code>id</code> (non-empty, unique on the map), <code>npc</code> (an <a href="#npc-definitions">NPC definition</a>'s name, at most 255
+  bytes: the NPC's name, template and components), <code>pos</code> and <code>respawnSec</code> are required; <code>heading</code> (radians) defaults to
+  0, <code>path</code> is optional. Any other key is an error. <code>pos</code> must lie inside the file's tile; its y is replaced by the
+  <a href="maps.html#ground">ground</a> there, like <code>chthonic.create</code>.</li>
+<li><strong>Respawn:</strong> <code>respawnSec</code> (0 to 31536000, a year) is how long after an NPC is destroyed (<code>chthonic.destroy</code>) the spawn
+  places a new one, at <code>pos</code> again, as a new entity id, with fresh definition data. <code>-1</code> never respawns.</li>
+<li><strong>Paths:</strong> named in the file's <code>paths</code> and used by its spawns. <code>points</code> (at least one <code>[x, y, z]</code>) is the route,
+  <code>wait</code> (seconds, default 0) the pause at each point, and <code>loop</code> (default <code>true</code>) goes from the last point back to the
+  first; <code>false</code> walks back along the route. The server does not move NPCs: a Lua system reads the path from the
+  read-only <code>Spawn</code> component (<code>chthonic.query("Spawn")</code>, <code>chthonic.get(e, "Spawn")</code>). The sample <code>systems/npcs.lua</code> walks
+  every NPC that has one, along <code>chthonic.map.path</code> between its points on a map with a <a href="maps.html#navmesh">navmesh</a>. <code>Spawn</code> also holds the file's <code>pos</code> (<code>{x, y, z}</code>, y as written, not clamped to the ground) and
+  <code>heading</code>, so a system can send an NPC home (for example walk a leashed NPC back to
+  it and heal it there).</li>
+<li><strong>Loading:</strong> at startup, the spawn files of every tile this process owns (every tile, for now) are read and checked
+  (the <code>maps loaded</code> log line counts each map's spawns); their NPCs come later, per tile. A file name that is
+  not <code>&lt;tx&gt;_&lt;tz&gt;.json</code>, a tile not on the map, an invalid file (each problem named, such as
+  <code>maps/start/.server/spawns/4_4.json: spawn "guard_1": "pos" is outside tile 4_4</code>), an unknown <code>path</code> or an <code>id</code> used
+  twice on a map refuses the start, and so does an <code>npc</code> with no definition, once <code>LUA_ROOT</code> is loaded
+  (<code>maps/start/.server/spawns/4_4.json: spawn "guard_1": unknown npc "Gaurd" (no definition in npcs/)</code>).
+  <code>map::parse_spawns</code> (the <code>chthonic_map</code> library) checks one file's shape without the server or Lua.</li>
+<li><strong>Spawning:</strong> a tile's spawns are placed the first time a player comes near it (<a href="maps.html#tile-activation">tile
+  activation</a>; at once for a login), and each tick the spawner places the ones due, before the Lua <code>update</code>, so
+  systems see them that tick; players get the <code>Spawn</code> on the next. They count toward <code>MAX_NPCS</code>: at the cap the due
+  spawns wait (one warning, <code>spawns deferred: MAX_NPCS reached</code>) and go in once there is room. A destroyed NPC's
+  respawn timer runs while its tile sleeps, and the new NPC starts asleep there.</li>
+</ul>
+</main>
+</div>
+</body>
+</html>

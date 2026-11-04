@@ -1,0 +1,4 @@
+/build/
+/certs/
+.env
+!.env.example

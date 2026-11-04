@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Instances - Chthonic World Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html" class="active">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="instances">Instances</h1>
+<p>An instance map (a dungeon, a raid, a scenario) runs as many separate copies as groups enter it, each copy its own
+<a href="maps.html#map-contexts">map context</a> updated in the <a href="maps.html#threading"><code>MAP_THREADS</code> pool</a> like a world map's. This is
+AzerothCore's <code>MapInstanced</code> / <code>InstanceMap</code> model, simplified: a Lua hook picks a copy by an <em>instance key</em>, copies live in memory
+only, and there are no binds, resets, difficulties, groups or lockouts.</p>
+<pre><code class="language-json">{ &quot;version&quot;: 1, &quot;id&quot;: 6, &quot;name&quot;: &quot;Crypt&quot;, &quot;tiles&quot;: [[0, 0, 0, 0]],
+  &quot;spawn&quot;: {&quot;pos&quot;: [128, 0, 128]},
+  &quot;type&quot;: &quot;instance&quot;,
+  &quot;maxPlayers&quot;: 2,
+  &quot;emptyTimeoutSec&quot;: 5,
+  &quot;exit&quot;: {&quot;map&quot;: 1, &quot;pos&quot;: [1030, 0, 1060], &quot;heading&quot;: 3.14} }
+</code></pre>
+<h2 id="manifest">map.json fields</h2>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>type</code></td>
+<td><code>"world"</code> (default) or <code>"instance"</code></td>
+<td>A world map has exactly one context (instanceId 0), started as before. An instance map has none at startup; copies are made on entry</td>
+</tr>
+<tr>
+<td><code>maxPlayers</code></td>
+<td>integer &ge; 1; absent: no limit</td>
+<td>Players per copy (NPCs do not count). A transfer into a full copy is refused (<a href="#full">below</a>)</td>
+</tr>
+<tr>
+<td><code>emptyTimeoutSec</code></td>
+<td>integer 0-31536000, default 300</td>
+<td>How long a copy lives once its last player left. 0: destroyed at the next serial point</td>
+</tr>
+<tr>
+<td><code>exit</code></td>
+<td><code>{map, pos, heading}</code>, required</td>
+<td>Where a character goes when it logs in saved in a copy that is gone (or full). <code>map</code> must be a loaded <em>world</em> map and <code>pos</code> on its tiles, not inside one of its portal areas</td>
+</tr>
+</tbody>
+</table>
+<p>The fields are parsed by <code>chthonic_map</code> (<code>map::parse_manifest</code>), so the server, <code>chthonic_mapbake</code> and any map tool linking it
+refuse the same things with the same messages, each naming the file and the field:
+<code>maps/crypt/map.json: "maxPlayers" must be an integer &gt;= 1 (leave it out for no limit)</code>,
+<code>maps/cave/map.json: "emptyTimeoutSec" is only for instance maps ("type": "instance")</code>. The exit is checked against the other maps
+once all are loaded (<code>map::exit_error</code>, like a <a href="areas.html#areas">portal</a> destination):
+<code>maps/crypt/map.json: "exit": position is not on a tile of map 1</code>. Any of these refuses the start. <code>START_MAP</code> must be a world map.
+A copy shares its map's immutable data (ground, navmesh, areas, objects, the parsed spawn files); its tile activation is its own, so each
+copy spawns its own NPCs.</p>
+
+<h2 id="choosing">Choosing the copy</h2>
+<ul>
+<li><strong>The key:</strong> on a transfer into an instance map (a <a href="areas.html#areas">portal</a> or <code>chthonic.transfer</code>), the source context asks its
+  systems' <code>instanceKey(e, map)</code> in system order; the first non-empty string (at most 255 bytes) is the key. <code>nil</code> from all, or no hook:
+  no key. Returning anything else disables that system, like any callback error. <code>chthonic.transfer(e, {map =, position =, heading =, instance = "key"})</code>
+  passes the key directly and the hooks are not asked.</li>
+<li><strong>The copy:</strong> a live copy of that map with that key is used; a key with no live copy makes a new copy registered under it; no key always
+  makes a new keyless copy. Keys are per map. A new copy gets a process-unique <code>uint32</code> instanceId &ge; 1 (counting up from one above the highest
+  <code>characters.instance_id</code> of the realm, read at startup before players are accepted, so an id saved in an earlier run names no
+  copy of this one; once <code>UINT32_MAX</code> is used no more copies are made, and the transfer is refused like a full copy:
+  <code>transfer refused: no new instance copy</code> <code>{reason: "instance ids exhausted"}</code> logged, <code>instance.full</code> published). The same
+  refusal, with <code>reason: "entity ids low"</code>, comes when fewer than 65536 entity indices are unused (kept for world maps and live copies,
+  <a href="maps.html#map-contexts">entity ids</a>); a copy takes its ids in blocks of 256, so about 1800 copies live at once fit. A new copy loads <code>npcs/</code> and <code>systems/</code> and runs their
+  <code>init</code>; it is logged as <code>instance created</code> <code>{map, name, instance, key}</code>.</li>
+<li><strong>Within a copy:</strong> <code>chthonic.transfer</code> onto the copy's own map without <code>instance</code> (or with its own key) teleports within the copy; with
+  another key it moves to that copy. Copies of one map share the map id, so the client gets <code>MapChange</code> with the same map id (see
+  <a href="protocol.html#maps">protocol</a>).</li>
+<li><strong>When:</strong> creation and destruction happen only at the <a href="maps.html#map-contexts">serial points</a>, never during the parallel
+  step, so <code>MAP_THREADS=4</code> makes the same copies with the same ids as <code>MAP_THREADS=1</code> (the parallel differential check covers it).</li>
+</ul>
+
+<h2 id="full">A full copy</h2>
+<p>A player's transfer into a copy that has <code>maxPlayers</code> players is refused: the player stays where it was, gets no <code>MapChange</code>, and
+<code>instance.full</code> <code>{entity, map, key}</code> is published on the source context's bus (logged <code>transfer refused: instance full</code>). The
+request checks the copy's player count as of the last serial point plus the players its own context queued for that copy, so
+<code>chthonic.transfer</code> returns <code>false</code>; one that filled up since (by another context's transfers or a login) is refused when the transfer is
+done, with the same event, after <code>chthonic.transfer</code> returned <code>true</code>. A portal that refuses leaves the player standing in it; it walks out and
+back in to try again. A new copy is never full.</p>
+
+<h2 id="empty">The empty timer</h2>
+<p>At every serial point each copy with no player starts its timer (if not running) and each with a player stops it. A copy whose timer passed
+its map's <code>emptyTimeoutSec</code> is destroyed there: every system's <code>shutdown</code> runs, its NPCs are removed (a spawn NPC that came from another
+map's spawn file respawns there), its key is free again, and its entity ids go back to the process-wide pool. Logged as <code>instance destroyed</code>.
+Time is the tick time (an injected clock in the self-checks). A player who enters first cancels the timer.</p>
+
+<h2 id="relog">Relog and restart</h2>
+<p><code>characters.instance_id</code> (<a href="persistence.html#persistence">migration 005</a>) is saved with the position: the copy's instanceId, 0 on a world map.
+On entering, a character saved on an instance map rejoins its copy at the saved position if that copy is live and has room. Otherwise (the copy was
+destroyed, the server restarted, the copy is full, or an old row with 0) it enters at the map's <code>exit</code>, logged as
+<code>saved instance not joinable; entering at the map's exit</code> with the reason (<code>instance gone</code>, <code>instance full</code>,
+<code>position off the map</code>).</p>
+
+<h2 id="lua">Lua</h2>
+<ul>
+<li><code>chthonic.map.instance()</code>: <code>{id, key, map}</code> of the copy this context runs (<code>key</code> nil for a keyless copy), or <code>nil</code> on a world map.</li>
+<li>Each copy's systems run <code>init</code> when it is made and <code>shutdown</code> when it is destroyed: the per-instance hooks. Module tables are per copy.</li>
+<li><code>chthonic.world.post</code> targets a world map's id, <code>"realm"</code> or <code>"all"</code> (every running context, copies included). An instance map's id raises:
+  it has no single context.</li>
+<li><code>chthonic.create</code> with <code>map</code> = an instance map raises, except from inside a copy of that map (the NPC is made in that copy).</li>
+</ul>
+<p>The sample <code>world/lua/systems/test_hooks.lua</code> keys copies by what a client sent in a <code>client.test.instance_key</code> event, for the
+bot scenarios; a game would use its party or raid id.</p>
+
+<h2 id="admin">Admin</h2>
+<p>The world <a href="protocol.html#admin">admin port</a>'s <code>AdminInstancesReq</code> lists every live context: map id and name, instanceId (0 for a
+world map), key, players, NPCs, when it was made and, for an empty copy, when its timer started. The admin app shows it on its
+<a href="../admin/index.html#instances">Instances</a> page. A layered world map's extra layers are listed the same way (no key).</p>
+<h2 id="layers">Layers</h2>
+<p>A <a href="maps.html#layers">layered world map</a> (<code>"layerCap"</code>) reuses this machinery for its extra layers, which are copies of
+the world map rather than of an instance map. What is the same: each is its own context, made with a fresh instanceId from the same
+counter, only at serial points, with its own Lua state, tile activation and NPC spawns; it is destroyed after the map's
+<code>emptyTimeoutSec</code> (default 300) with no players, as an empty copy is; <code>characters.instance_id</code> names it for a relog; when no
+copy can be made (ids exhausted, entity ids low) the same checks apply. What differs: no keys and no <code>instanceKey</code> (the
+<code>layerFor</code> hook and the fill-the-fullest placement pick the layer); the base layer (instanceId 0) always exists; a full layer
+opens a new one instead of refusing, and with no new copy possible the player overfills a layer, so a login or a transfer onto a world
+map is never refused because of layers; a gone or full saved layer means placement on the same map, not an <code>exit</code>. Only
+<code>chthonic.transfer</code>'s explicit <code>layer =</code> is refused like a full copy (<code>instance.full</code> <code>{entity, map, layer}</code>).</p>
+</main>
+</div>
+</body>
+</html>

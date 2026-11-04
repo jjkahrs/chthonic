@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setup and commands - Chthonic World Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html" class="active">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="setup">Setup</h1>
+<pre><code class="language-sh">cd world
+cp .env.example .env              # dev defaults; change the passwords
+docker compose up -d --build      # world + chat + auth (built from ../auth) + MySQL 8.4 + Mailpit
+docker compose ps                 # all healthy
+docker compose logs world         # &quot;migration applied&quot;, &quot;listening&quot;
+</code></pre>
+<p><strong>Maps:</strong> compose mounts <code>MAPS_DIR</code> (in <code>.env</code> or the shell; default <code>./maps</code>) as the world's
+<code>/app/maps</code>. <code>world/maps</code> ships empty apart from a minimal flat start map (id 1, see its <code>README.md</code>), because the
+world refuses to start without a map. Set <code>MAPS_DIR</code> to a full maps folder (<a href="maps.html">Maps</a>) and
+<code>docker compose up -d</code> to run on it; the integration scenarios that need the sample maps report <code>SKIP</code> without them
+(<a href="tests.html#sample-maps">Tests</a>).</p>
+<table>
+<thead>
+<tr>
+<th>Service</th>
+<th>Host port</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>world</code></td>
+<td>7777</td>
+<td>Applies migrations, then listens. The dev TLS cert is in volume <code>world-certs</code></td>
+</tr>
+<tr>
+<td><code>auth</code></td>
+<td>3100</td>
+<td><code>auth</code>, unmodified. <strong><code>TRUST_PROXY=true</code>, for testing only</strong> (see Security)</td>
+</tr>
+<tr>
+<td><code>mysql</code></td>
+<td>3307</td>
+<td>One MySQL 8.4 for both services (volume <code>mysql-data</code>)</td>
+</tr>
+<tr>
+<td><code>mailpit</code></td>
+<td>8026</td>
+<td>Verification emails. The bots read them through the API</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Side by side with auth:</strong> the host ports differ from <code>auth</code>'s own stack, so both stacks can run at once.</li>
+<li><strong>Database setup:</strong> the mysql image creates auth's database and user from <code>MYSQL_DATABASE</code>/<code>MYSQL_USER</code>. On a fresh volume, <code>docker/mysql-init.sh</code> also creates <code>chthonic_world</code>, <code>chthonic_world_test</code> and the world user.<ul>
+<li><code>chthonic_world_test</code> is reserved for database tests. The self-check needs no database.</li>
+</ul>
+</li>
+<li><strong>Stopping:</strong> <code>docker compose down</code> keeps the data. <code>down -v</code> also deletes the databases, auth's signing key and the dev certificate.</li>
+</ul>
+<h2 id="building-on-windows-msvc--vcpkg">Building on Windows (MSVC + vcpkg)</h2>
+<p>From a VS 2022 x64 developer prompt, with <code>VCPKG_ROOT</code> set:</p>
+<pre><code class="language-bat">cmake --preset debug          :: or release; static triplet x64-windows-static
+cmake --build --preset debug
+ctest --preset debug          :: world_self_check, mapbake_cli
+</code></pre>
+<p>The Linux image builds with the <code>linux-release</code> preset (<code>x64-linux-release</code> triplet). Its <code>Dockerfile</code> stages are:</p>
+<ul>
+<li><code>deps</code>: vcpkg at the pinned baseline. This stage is cached until <code>vcpkg.json</code> changes. The first build compiles the MySQL client from source, which is slow but happens only once.</li>
+<li><code>build</code>: compiles with warnings as errors, then runs ctest.</li>
+<li>runtime: a slim image running as the non-root <code>world</code> user, with <code>chthonic_world</code>, <code>chthonic_bot</code> and <code>chthonic_mapbake</code>.</li>
+</ul>
+<p>To run the server on the host against the compose MySQL and auth, point <code>.env</code> at <code>localhost:3307</code> and <code>localhost:3100</code> (the <code>.env.example</code> defaults), then run <code>build/debug/chthonic_world.exe</code> from <code>world</code>.</p>
+<h1 id="commands">Commands</h1>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>What</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ctest --preset debug</code></td>
+<td>Self-check: codec round trip for every message, frame rejection, names, movement, AOI, chat, rate limits, config, tick stats, JWT and JWKS with local RSA keys. Lua (<code>tests/lua_checks.cpp</code>): definition parsing (every type, option, new key and error case), reserved and duplicate names, sandbox, <code>chthonic.*</code> semantics and every <code>set</code> error, hook order, an error disabling one system, startup errors listed in full, persistence round trip + drift + verbatim preservation, and replication routing (owner / aoi / none, AOI-enter full set, unchanged not resent, nothing after <code>Despawn</code>, oversize). NPCs: <code>chthonic.create</code> / <code>chthonic.destroy</code> and every bad argument, <code>MAX_NPCS</code> (and <code>0</code>), the <code>Npc</code> / <code>Transform</code> built-in rules and clamping, <code>query</code> by <code>Character</code> / <code>Npc</code>, <code>Spawn{kind, template}</code> / <code>EntityMoves</code> / <code>Despawn</code> routing as an NPC moves across the grid, aoi / owner components and <code>sendTo</code> / <code>sendNearby</code> on NPCs, never saved or dirty, Lua components and <code>chthonic.fsm</code> on NPCs, no <code>onEnter</code> / <code>onLeave</code>, a destroy in the tick it came into view, silent removal at shutdown, and the sample <code>lua/</code> (the Guard from its spawn file patrolling at 3 m/s). NPC spawns: <code>parse_spawns</code> (version 2, and version 1 / leftover <code>name</code> / <code>template</code> / missing <code>npc</code> rejected) and every spawn file error, respawn timing on the injected clock, <code>MAX_NPCS</code> deferral, the <code>Spawn</code> built-in. NPC definitions: parsing and every rejection (keys, duplicates, unknown and read-only components, every field error, an unknown <code>StateMachine.machine</code>), <code>chthonic.create</code> with <code>npc</code> / <code>components</code> / <code>template</code> and every bad option (nothing created), per-field merge, <code>Npc.npc</code>, an unknown spawn <code>npc</code> refusing the start, exact components and fresh data on respawn, <code>Spawn</code> then <code>aoi</code> data on AOI enter, and the sample definitions (Health data, the Guard and Sentry's <code>patrol</code> from their definitions). Protocol v2: the <code>Spawn</code> layout for both kinds, a bad kind and a v1 <code>Spawn</code> rejected as malformed State machines: definition parsing and every rejection, duplicate names, <code>GAME_STATE_MACHINES</code> startup errors, <code>allowedFrom</code> / omitted / <code>"*"</code> / self-transition rules, callback and event order, queued changes, callback errors and timeouts, game machine startup, the <code>StateMachine</code> built-in lifecycle (not persisted or replicated), every <code>chthonic.fsm</code> misuse, read-only <code>chthonic.fsm</code>, and C++ / Lua parity</td>
+</tr>
+<tr>
+<td><code>docker compose build</code></td>
+<td>Linux build; the self-check runs inside it</td>
+</tr>
+<tr>
+<td><code>bash tests/integration.sh</code></td>
+<td>All 18 integration scenarios (1–18) against the running stack. Prints PASS/FAIL each and exits non-zero on any failure</td>
+</tr>
+<tr>
+<td><code>bash tests/load.sh</code></td>
+<td>Load test: 500 <code>wander</code> bots for 300 s (<code>COUNT</code>, <code>DURATION</code>, <code>BEHAVIOUR</code>, <code>THREADS</code> override;
+<code>MAPS=1,2,4,5</code> spreads the bots over those maps, <code>MAP_THREADS</code> sets the world's; <a href="tests.html">Tests</a>)</td>
+</tr>
+<tr>
+<td><code>bash tests/docs_check.sh</code></td>
+<td>Every opcode, code and env var in the source appears in docs/world/protocol.html / configuration.html</td>
+</tr>
+<tr>
+<td><code>docker compose run --rm bot --scenario aoi</code></td>
+<td>One scenario</td>
+</tr>
+<tr>
+<td><code>docker compose run --rm bot --mode load --count 50 --behaviour chat --duration 60</code></td>
+<td>Ad-hoc load (add <code>--maps 1,4</code> to spread the bots over maps 1 and 4 through the portals)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Scenario names:</strong> <code>auth</code>, <code>characters</code>, <code>ownership</code>, <code>aoi</code>, <code>chat</code>, <code>speedhack</code>, <code>malformed</code>, <code>handshake</code>, <code>duplicate</code>, <code>persist</code>, <code>shutdown</code>, <code>restart-verify</code>, <code>dbdown</code>, <code>components</code>, <code>components-verify</code> (<code>--expect-components gold,health</code>, after a restart), <code>events</code>, <code>fsm</code>, <code>npcs</code>, <code>portal</code>, <code>respawn</code>, <code>terrain</code>, <code>navmesh</code>, <code>client-events</code> and <code>client-event-rate</code> (see <a href="tests.html">Tests</a>).</p>
+<p><strong>Scenario 13 (<code>components</code>):</strong> needs the sample <code>lua/</code>. A and B are in range. A gets its own <code>Health</code> and <code>Wallet</code>; B gets A's <code>Health</code> but never A's <code>Wallet</code>; <code>Spawn</code> comes before data; unchanged values are not resent; nothing follows <code>Despawn</code>. A walks and its <code>Health</code> drains. After a relog, A's <code>Health</code> and <code>Wallet</code> were persisted. A client <code>ComponentUpdate</code> gets <code>unexpected_message</code>. Then <code>world</code> restarts and <code>components-verify</code> checks both values again.</p>
+<p><strong>Load behaviours:</strong> <code>idle</code>, <code>wander</code> (random valid moves at 10 Hz, 9 m/s), <code>chat</code>, <code>speedhack</code> (50 m/s, expects <code>Correction</code>), <code>malformed</code> (expects <code>unknown_opcode</code>).</p>
+<p><strong>Running the scripts:</strong> they need bash, which is Git Bash on Windows. <code>integration.sh</code> stops and restarts <code>world</code> and <code>mysql</code> for scenarios 10–13, so only point it at a test stack.</p>
+<h2 id="migrations">Migrations</h2>
+<ul>
+<li><strong>Order:</strong> <code>migrations/*.sql</code> run in filename order at every start, each once, and are tracked in <code>schema_migrations</code>.</li>
+<li><strong>Locking:</strong> a MySQL named lock (<code>GET_LOCK('chthonic_world_migrate')</code>) stops two instances from migrating at once.</li>
+<li><strong>Statements:</strong> a statement ends with <code>;</code> at the end of a line, and every statement runs as a prepared statement.</li>
+<li><strong>Failures:</strong> startup fails, with a non-zero exit, if the database is unreachable or a migration fails. MySQL DDL auto-commits, so a file that fails halfway must be fixed by hand.</li>
+</ul>
+</main>
+</div>
+</body>
+</html>

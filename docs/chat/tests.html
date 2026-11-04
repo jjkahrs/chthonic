@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tests - Chthonic Chat Service</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="../world/index.html">World Server</a><a href="index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Chat Service</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="tests.html" class="active">Tests</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="tests">Tests</h1>
+<ul>
+<li><strong><code>chat_self_check</code></strong> (<code>ctest --preset debug</code> in <code>chat</code>; also run by the Docker build): the chat messages' codec, binding (held, replaced, dropped on <code>CharOffline</code> and a lost link), whispers across maps and to offline names, channels (General on connect, join/leave Trade, non-members), the zone channel following map changes, ignore / unignore, mutes (players refused, GM mute persisted and sent to the links, notices, expiry, unmute, cap), the rate limit and text rules, the config, and token rejection. No network or database: time is passed in.</li>
+<li><strong><code>world_self_check</code></strong> (<code>world</code>): the v9 codec (every chat and link message, kinds, malformed values), proximity chat (say in view, yell past the view radius but not past <code>CHAT_YELL_RADIUS</code> nor to another map, emote, muted characters dropped with a notice, expiry) and the chat config.</li>
+<li><strong>Integration</strong> (<code>world/tests/integration.sh</code>, against the compose stack): <code>chthonic_bot</code> scenarios 29-38:
+<ul>
+<li>29 <code>yell</code>: say to B 100 m away only; yell reaches C 200 m away (past the 128 m view radius), not D 320 m away; emote.</li>
+<li>30 <code>chat-whisper</code>: <code>ChatServer</code> after <code>EnterWorldOk</code>; a whisper reaches B on the cave map; an offline name gets <code>not_online</code>.</li>
+<li>31 <code>chat-channels</code>: General on connect; Trade join, members only, <code>not_in_channel</code>, leave.</li>
+<li>32 <code>chat-zone</code>: zone lines stay on the sender's map and follow portals.</li>
+<li>33 <code>chat-ignore</code>: whisper, channel and zone lines of an ignored sender never arrive; unignore restores them.</li>
+<li>34 <code>chat-mute</code>: a player can't mute; a GM (the script gives the account role <code>gm</code> in auth's database) mutes B for a minute: B's channel line and its say, yell and emote are dropped with notices; <code>docker compose restart chat</code>; still muted (from MySQL); the mute expires; mute and unmute.</li>
+<li>35 <code>chat-limits</code>: control characters stripped, oversize and invalid UTF-8 rejected, 5 per 10 s, no disconnect.</li>
+<li>36 <code>chat-auth</code>: garbage, tampered and expired tokens; a valid token without a character (held, then <code>no_character</code>); a wrong link secret, a wrong link version and link messages before <code>LinkHello</code>.</li>
+<li>37 <code>chat-down</code>: <code>docker compose stop chat</code>: chat connections close, say still works; <code>start</code>: clients reconnect, General again, whispers work.</li>
+<li>38: no chat text of these scenarios in the chat service's log.</li>
+</ul></li>
+<li><strong>Load:</strong> <code>chthonic_bot --mode load --behaviour chat</code> (say) still runs against the stack.</li>
+</ul>
+<p><code>world/tests/docs_check.sh</code> also checks that every chat opcode and notice code is in <a href="protocol.html">Protocol</a> and every chat environment variable in these pages.</p>
+</main>
+</div>
+</body>
+</html>

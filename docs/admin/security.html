@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security behaviour - Chthonic Admin App</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="../world/index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Admin App</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="permissions.html">Permissions</a></li><li><a href="endpoints.html">Endpoints</a></li><li><a href="security.html" class="active">Security behaviour</a></li></ul></nav>
+<main>
+<h1 id="security-behaviour">Security behaviour</h1>
+<h2 id="sessions">Sessions (backend-for-frontend)</h2>
+<ul>
+<li>Sign-in goes through auth's <code>/v1/auth/login</code>. The access and refresh tokens are kept only in the <code>chthonic_admin_access</code> / <code>chthonic_admin_refresh</code> cookies: <code>HttpOnly</code>, <code>SameSite=Strict</code>, <code>Path=/api</code>, and <code>Secure</code> unless <code>COOKIE_SECURE=false</code>. The SPA's JavaScript never sees a token.</li>
+<li>Access tokens are verified locally against auth's JWKS (issuer, audience, expiry). The role comes from the token. An expired access token is refreshed through auth once per refresh token, even under parallel requests (auth treats a reused refresh token as theft).</li>
+<li>Players are refused at sign-in (403) and the session auth just created for them is logged out.</li>
+<li>Logout calls auth's logout and clears the cookies.</li>
+</ul>
+<h2 id="csrf">CSRF</h2>
+<p>Double-submit token: <code>chthonic_admin_csrf</code> (readable by JavaScript, <code>SameSite=Strict</code>, <code>Path=/</code>) is handed out on the first <code>/api</code> request and replaced at sign-in. Every non-GET request must send the same value in <code>X-CSRF-Token</code>, or it gets <code>403 csrf_invalid</code>.</p>
+<h2 id="online-guard">Online guard and force</h2>
+<p>Before any character write, the admin service asks the character's realm whether the account is online. Online → <code>409 character_online</code>, and the UI offers a Kick. If the realm has no admin endpoint, refuses the connection or times out (<code>WORLD_ADMIN_TIMEOUT_MS</code>) → <code>503 realm_unreachable</code>. Admins may send <code>force: true</code> to write anyway; the audit row records <code>forced=true</code>. GMs cannot force (403).</p>
+<h2 id="world-admin-port">World admin port</h2>
+<ul>
+<li>TLS to each world server's <a href="../world/security.html#admin-port">admin port</a>, verified against <code>WORLD_ADMIN_CA_FILE</code>. The first message carries <code>WORLD_ADMIN_SECRET</code>, which the world compares in constant time. One connection per request.</li>
+<li>The secret lives only in the environment: never stored, logged or returned.</li>
+<li>Realm admin hosts and ports are admin-only data. GMs never receive them: their requests use the server-side copy in <code>chthonic_admin.realm_endpoints</code> (see <a href="setup.html#first-admin-sign-in">Setup</a>).</li>
+<li>Never publish the world admin port or the admin app to the internet. Compose keeps 7780 on the compose network and binds 3200 to <code>127.0.0.1</code>.</li>
+</ul>
+<h2 id="least-privilege">Least privilege</h2>
+<ul>
+<li>The admin service never connects to <code>chthonic_auth</code>. Account and realm changes go through auth's API with the caller's token, so auth enforces its own rules (for example GMs only on <code>player</code> accounts, no self-ban).</li>
+<li>Its world MySQL user has <code>SELECT, UPDATE</code> on <code>chthonic_world.characters</code> only: characters are soft-deleted, never removed.</li>
+<li>Its admin MySQL user owns <code>chthonic_admin</code> only.</li>
+</ul>
+<h2 id="audit">Audit log</h2>
+<p>Every mutating request writes exactly one <code>admin_audit</code> row before the response: actor id, email and role, action (for example <code>character.rename</code>, <code>account.ban</code>, <code>realm.kick</code>), target, before/after JSON, <code>forced</code>, and <code>result</code> (<code>ok</code> or the error code, including role refusals). Passwords are never recorded. Timestamps are UTC, written by the app.</p>
+<h2 id="http">HTTP hardening</h2>
+<p><code>helmet</code> defaults (CSP <code>default-src 'self'</code>, no MIME sniffing, no framing), <code>Cache-Control: no-store</code> on <code>/api</code>, a 100 KB JSON body limit, zod validation of every input, and generic 500s that never leak internals.</p>
+</main>
+</div>
+</body>
+</html>

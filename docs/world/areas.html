@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Areas - Chthonic World Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html" class="active">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="areas">Areas</h1>
+<p>A map can name its regions (provinces, districts, towns) in an optional <code>areas.json</code> next to its <code>map.json</code>. The server
+always knows which area every player is in. It publishes enter/leave events on the <a href="events.html#events">event bus</a>, answers
+area lookups from Lua, and treats an area with a <code>portal</code> as a portal to another map.</p>
+<pre><code class="language-json">{ &quot;version&quot;: 1, &quot;areas&quot;: [
+  {&quot;id&quot;: &quot;eastvale&quot;, &quot;name&quot;: &quot;Eastvale&quot;, &quot;priority&quot;: 0, &quot;rect&quot;: [0, 0, 2048, 2048],
+   &quot;flags&quot;: {&quot;pvp&quot;: false, &quot;noMount&quot;: false}, &quot;music&quot;: &quot;sounds/eastvale.ogg&quot;},
+  {&quot;id&quot;: &quot;goldshire&quot;, &quot;name&quot;: &quot;Goldshire&quot;, &quot;parent&quot;: &quot;eastvale&quot;, &quot;priority&quot;: 10,
+   &quot;polygon&quot;: [[1000, 980], [1035, 980], [1035, 1030], [1000, 1030]], &quot;y&quot;: [-50, 200], &quot;flags&quot;: {&quot;pvp&quot;: true}},
+  {&quot;id&quot;: &quot;cave_mouth&quot;, &quot;name&quot;: &quot;Cave Entrance&quot;, &quot;parent&quot;: &quot;eastvale&quot;, &quot;priority&quot;: 20, &quot;rect&quot;: [1040, 990, 1050, 1000],
+   &quot;portal&quot;: {&quot;map&quot;: 2, &quot;pos&quot;: [256, 0, 240], &quot;heading&quot;: 3.14}}
+]}
+</code></pre>
+<ul>
+<li><strong>Shape:</strong> exactly one of <code>rect</code> <code>[x0, z0, x1, z1]</code> (x0 &lt; x1, z0 &lt; z1) or <code>polygon</code> (at least 3 <code>[x, z]</code> points, any
+  simple polygon, convex or not), on the x/z plane. An optional <code>y</code> <code>[min, max]</code> limits it in height (bounds
+  included). A point exactly on an edge may count as either side.</li>
+<li><strong>Which area:</strong> a point is in the highest-<code>priority</code> area that contains it (default priority 0), or in none.
+  <code>chthonic_map</code>'s <code>area_at</code> does the lookup with a per-tile index built at load. It is pure, so the client can reuse it.</li>
+<li><strong>Fields:</strong> <code>id</code> (unique, required). <code>name</code> defaults to <code>id</code>. <code>music</code> is a project path (not inherited). <code>flags</code> is
+  any JSON object: an area's flags are its <code>parent</code>'s (resolved the same way), with its own on top. The server only
+  passes flags on. Game Lua decides what <code>pvp</code>, <code>noMount</code> and the rest mean.</li>
+<li><strong>Load errors</strong> refuse the start, naming the file and area: a bad shape or field, a duplicate id, an unknown parent
+  or a parent cycle, two areas with equal priority that overlap (sharing an edge is fine, and so are disjoint <code>y</code>
+  ranges), a portal to an unknown map, a portal destination that is not on that map's tiles, or one inside a portal area
+  there (so a portal never sends a player straight into another).</li>
+<li><strong>Events:</strong> after movement each tick, each player that moved is looked up again. On a change the bus gets
+  <code>area.leave</code> for the old area, then <code>area.enter</code> for the new one. The payload is <code>{entity, map, area, name, flags}</code>,
+  where <code>area</code> is the area id and <code>flags</code> are the resolved flags. Leaving into no area publishes only <code>area.leave</code>. On
+  login (and after any transfer) the player's area is set the same way, so login publishes <code>area.enter</code> alone; logout
+  publishes nothing (<code>onLeave</code> covers it). NPCs get no area events.</li>
+<li><strong>Portals:</strong> a player who moves into a portal area is sent to <code>portal.map</code> at <code>portal.pos</code> / <code>portal.heading</code> through
+  <code>World::transfer</code>, before the tick's interest pass. The client gets <code>MapChange</code>, then <code>Despawn</code> for its old
+  neighbours, then <code>Spawn</code> for its new ones, all in that tick. The bus gets <code>area.enter</code> for the portal area, then
+  <code>area.leave</code> for it and <code>area.enter</code> for the destination's area; onto another map, the leave goes on the old map's bus and
+  the enter on the new map's, each delivered at that map's drain in the portal tick (<a href="maps.html#map-contexts">Map contexts</a>). The player is not in a portal on arrival, so it
+  must walk out and back in to return.</li>
+<li><strong>Into an instance map:</strong> a portal's <code>map</code> may be an <a href="instances.html">instance map</a>. The copy is picked by the
+  source map's systems' <code>instanceKey(e, map)</code> (none, or nil: a new copy); into a full copy the player stays in the portal with no
+  <code>MapChange</code> and <code>instance.full</code> <code>{entity, map, key}</code> goes on the source map's bus. A portal on an instance map leads
+  wherever it says (the sample crypt's <code>crypt_exit</code> back to Start); one onto the same map moves within the copy.</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Lua</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>chthonic.map.area(e)</code></td>
+<td><code>{id, name, flags, music}</code> of the area player or NPC <code>e</code> is in, or <code>nil</code></td>
+</tr>
+<tr>
+<td><code>chthonic.map.areaAt(map, x, y, z)</code></td>
+<td>The same for a point on loaded map <code>map</code>, or <code>nil</code>. Raises on an unloaded map</td>
+</tr>
+</tbody>
+</table>
+</main>
+</div>
+</body>
+</html>

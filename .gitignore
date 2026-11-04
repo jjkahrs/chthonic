@@ -1,0 +1,46 @@
+# Build output (CMake presets write to <service>/build, incl. vcpkg_installed)
+build/
+out/
+CMakeUserPresets.json
+
+# vcpkg
+vcpkg_installed/
+
+# Compiled artifacts
+*.exe
+*.dll
+*.lib
+*.exp
+*.ilk
+*.pdb
+*.obj
+*.o
+
+# Runtime-generated state
+imgui.ini
+
+# Local-only files
+/prompts/
+
+# IDE / tooling
+.vs/
+.vscode/
+.idea/
+.cache/
+compile_commands.json
+*.user
+*.suo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Node
+node_modules/
+dist/
+coverage/
+*.log
+.env
+!.env.example
+auth/keys/

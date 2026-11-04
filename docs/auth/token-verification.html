@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token verification - Chthonic Auth Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="index.html">Auth Server</a><a href="../world/index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Auth Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="endpoints.html">Endpoints</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="token-verification.html" class="active">Token verification</a></li></ul></nav>
+<main>
+<h1 id="verifying-access-tokens-from-the-world-server">Verifying access tokens from the World Server</h1>
+<p>The World Server only needs the public keys:</p>
+<ol>
+<li>Fetch <code>GET {auth}/.well-known/jwks.json</code> and cache it (it is served with <code>max-age=300</code>). When a token carries a <code>kid</code> you don't have cached, refetch once, which handles key rotation.</li>
+<li>Verify each access token:<ul>
+<li><code>alg</code> must be <code>RS256</code>. Reject anything else, including <code>none</code> and HS*.</li>
+<li>Choose the key by the <code>kid</code> header.</li>
+<li><code>iss</code> must equal <code>JWT_ISSUER</code> and <code>aud</code> must equal <code>JWT_AUDIENCE</code>.</li>
+<li><code>exp</code> must be in the future. Allow at most a few seconds of clock skew.</li>
+</ul>
+</li>
+<li>Use the claims: <code>sub</code> is the account id (a string), plus <code>email</code> and <code>role</code> (<code>player</code>, <code>gm</code> or <code>admin</code>).</li>
+</ol>
+<p>Node example (<code>jose</code>):</p>
+<pre><code class="language-ts">import { createRemoteJWKSet, jwtVerify } from 'jose';
+const jwks = createRemoteJWKSet(new URL('http://auth:3000/.well-known/jwks.json'));
+const { payload } = await jwtVerify(token, jwks, { issuer: 'chthonic-auth', audience: 'chthonic', algorithms: ['RS256'] });
+</code></pre>
+<p><strong>Ban and role gap (up to 15 minutes).</strong></p>
+<ul>
+<li>Banning an account revokes its refresh tokens immediately, so it can't get new access tokens.</li>
+<li>An access token that was already issued keeps working until its <code>exp</code>, which is at most <code>ACCESS_TOKEN_TTL_SECONDS</code> (15 min).</li>
+<li>A role change also only takes effect in the next token.</li>
+<li>If the World Server needs to kick a banned player sooner, it has to ask this service. That would need a new endpoint; none exists today.</li>
+</ul>
+<h2 id="key-rotation">Key rotation</h2>
+<p>The JWKS currently publishes a single key. To rotate:</p>
+<ol>
+<li>Deploy the new key.</li>
+<li>Tokens signed by the old key fail verification once the new JWKS is fetched, so players have to refresh. Their refresh tokens are unaffected.</li>
+</ol>
+<p>A zero-downtime rotation would need the JWKS to publish both keys during an overlap window. That isn't built yet.</p>
+</main>
+</div>
+</body>
+</html>

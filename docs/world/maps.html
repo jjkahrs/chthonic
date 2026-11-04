@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maps - Chthonic World Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html" class="active">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="maps">Maps</h1>
+<p>The world is a set of maps (continents, dungeons), all run by this one process. A map is seamless inside; maps are
+joined only by transfers. Players and NPCs on different maps never see each other, even at the same x/z.</p>
+<pre><code>&lt;MAP_ROOT&gt;/&lt;folder&gt;/map.json        one folder per map; dot-folders (.server/) are skipped
+&lt;MAP_ROOT&gt;/&lt;folder&gt;/areas.json      optional: the map's named areas (see Areas)
+&lt;MAP_ROOT&gt;/&lt;folder&gt;/zones.json      optional, client and map tools: the map's zones (see Zones; the server ignores it)
+&lt;MAP_ROOT&gt;/&lt;folder&gt;/heights/&lt;tx&gt;_&lt;tz&gt;.r16|.png   optional: tile heightmaps (see Ground)
+&lt;MAP_ROOT&gt;/&lt;folder&gt;/.server/spawns/&lt;tx&gt;_&lt;tz&gt;.json   optional, server only: the NPCs a tile places (see NPC spawns)
+&lt;MAP_ROOT&gt;/&lt;folder&gt;/.server/nav/&lt;tx&gt;_&lt;tz&gt;.navtile   optional, server only: the tile's baked navmesh (see Navmesh)
+&lt;MAP_ROOT&gt;/&lt;folder&gt;/objects/&lt;tx&gt;_&lt;tz&gt;.json   optional, client and chthonic_mapbake: the tile's map objects (see Objects)
+&lt;MAP_ROOT&gt;/&lt;folder&gt;/.server/interactables/&lt;tx&gt;_&lt;tz&gt;.json   optional, server only: its interactables (see Objects)
+</code></pre>
+<pre><code class="language-json">{ &quot;version&quot;: 1, &quot;id&quot;: 1, &quot;name&quot;: &quot;Eastlands&quot;,
+  &quot;tiles&quot;: [[0, 0, 7, 7]],
+  &quot;heightRange&quot;: [-100, 500],
+  &quot;spawn&quot;: {&quot;pos&quot;: [1024, 0, 1024], &quot;heading&quot;: 0},
+  &quot;material&quot;: &quot;materials/terrain_grass.mat&quot;,
+  &quot;nav&quot;: {&quot;agentRadius&quot;: 0.4, &quot;agentHeight&quot;: 1.8, &quot;maxClimb&quot;: 0.5, &quot;maxSlopeDeg&quot;: 45, &quot;cellSize&quot;: 0.5} }
+</code></pre>
+<p>A map is a <em>world</em> map (the default: one context for everyone; with <code>layerCap</code>, one per
+<a href="#layers">layer</a>) or, with <code>"type": "instance"</code>, an
+<a href="instances.html">instance map</a>, run as one copy per instance key, with <code>maxPlayers</code>, <code>emptyTimeoutSec</code> and a required
+<code>exit</code>.</p>
+<ul>
+<li><strong>Tiles:</strong> a map is made of 256 m tiles; tile <code>(tx, tz)</code> = <code>(floor(x / 256), floor(z / 256))</code>, so x = 256 is tile 1.
+  The map's origin is the corner of tile (0, 0). <code>tiles</code> lists inclusive rectangles <code>[x0, z0, x1, z1]</code>; the map is
+  their union, and negative tiles are fine.</li>
+<li><strong>Identity:</strong> <code>id</code> (0-65535) is what the database, the wire and Lua use. It must be unique across maps; the folder
+  name only locates the files. <code>version</code> must be 1.</li>
+<li><strong>Required:</strong> <code>version</code>, <code>id</code>, <code>tiles</code> and <code>spawn.pos</code> (on a declared tile). <code>name</code>, <code>spawn.heading</code>, <code>heightRange</code>,
+  <code>material</code>, <code>terrainUv</code> (<code>"tiled"</code> or <code>"map"</code>; anything else fails the map), <code>nav</code> and <code>type</code> (<code>"world"</code> or <code>"instance"</code>, with the
+  <a href="instances.html#manifest">instance fields</a>, which on a world map fail it) and <code>layerCap</code> (world maps
+  only, <a href="#layers">Layers</a>) are optional, and unknown keys
+  (such as a map editor's <code>terrainColors</code>) are ignored. The game client's terrain uses <code>heightRange</code>,
+  <code>material</code>, <code>terrainUv</code> and <code>nav.maxSlopeDeg</code>; the server uses <code>heightRange</code> and the heightmaps for the <a href="#ground">ground</a>. <code>map/heights.h</code> (heightmap decoding and the shared
+  ground triangles) is part of <code>chthonic_map</code>, so the server build needs vcpkg's <code>stb</code>.</li>
+<li><strong>Startup:</strong> every map is loaded and logged (<code>maps loaded</code>). Any bad manifest (with the file and the problem, such as
+  <code>maps/cave/map.json: tiles[0]: x0 &lt;= x1 and z0 &lt;= z1 required</code>), a duplicate id, no maps, a missing <code>START_MAP</code> or one
+  that is an instance map, an instance map's <code>exit</code> off a loaded world map's tiles or in a portal there, a
+  spawn y outside <code>MIN_Y</code>/<code>MAX_Y</code>, or a bad <a href="#objects">interactables</a> file refuses the start.</li>
+<li><strong>Bounds:</strong> a move onto a tile the map does not declare is rejected with <code>Correction</code>.</li>
+<li><strong>Characters:</strong> <code>characters.map_id</code> (<code>migrations/003_character_map.sql</code>) is saved with the position. On enter, a map
+  that is no longer loaded, or a position no longer on its map, puts the character at <code>START_MAP</code>'s spawn (logged).
+  Rows from before the migration have <code>map_id</code> 0, read as <code>START_MAP</code> with their position kept. On an instance map,
+  <code>characters.instance_id</code> names the copy: a live one with room is rejoined, else the map's <code>exit</code>
+  (<a href="instances.html#relog">Instances</a>).</li>
+<li><strong>Transfers:</strong> <code>World::transfer(e, {map, pos, heading})</code> (and <code>chthonic.transfer</code> from Lua) is the only way to change map,
+  for players and NPCs alike, and also teleports within a map. It moves the entity at once, resets a player's move
+  budget and sends it <code>MapChange</code>, then <code>Despawn</code> for its old neighbours, who get its <code>Despawn</code>. The next interest pass
+  sends the <code>Spawn</code>s at the destination: in the same tick for a <a href="areas.html#areas">portal</a>, the next tick for <code>chthonic.transfer</code>. So
+  <code>MapChange</code> always reaches the client first (<a href="protocol.html#maps">protocol</a>). Onto another map the entity changes
+  <a href="#map-contexts">context</a>: a portal moves it at the serial point right after movement, a <code>chthonic.transfer</code> at the end of
+  the tick.</li>
+<li><strong>Ownership:</strong> a transfer to a tile this process does not own is refused and logged. Every loaded tile is owned for
+  now; the check is the seam for running maps in several processes later.</li>
+</ul>
+<h2 id="zones">Zones</h2>
+<p>A <em>zone</em> is a named set of a map's tiles: every declared tile is in exactly one zone, and a zone's tiles are
+contiguous (connected through shared edges; tiles touching only at a corner are not). Crossing from one zone to the next
+is seamless: same map, same context, no transfer. <code>zones.json</code> is optional:</p>
+<pre><code class="language-json">{ &quot;version&quot;: 1, &quot;zones&quot;: [
+  {&quot;id&quot;: &quot;eastvale&quot;, &quot;name&quot;: &quot;Eastvale&quot;, &quot;tiles&quot;: [[0, 0, 3, 7]], &quot;flags&quot;: {&quot;pvp&quot;: false}},
+  {&quot;id&quot;: &quot;westmarch&quot;, &quot;tiles&quot;: [[4, 0, 7, 7]]}
+]}
+</code></pre>
+<ul>
+<li><strong>Fields:</strong> <code>id</code> (required, unique; letters, digits, <code>_</code> and <code>-</code>, not starting with <code>-</code>, like a map
+  folder), <code>name</code> (defaults to <code>id</code>), <code>tiles</code> (required, inclusive rectangles <code>[x0, z0, x1, z1]</code> like
+  <code>map.json</code>'s; the zone is their union) and <code>flags</code> (optional object, passed through untouched). Unknown keys are kept
+  by tools that save the file.</li>
+<li><strong>No file:</strong> the map is one implicit zone: <code>id</code> = the map's folder, <code>name</code> = the map's <code>name</code> (or the
+  folder), every declared tile.</li>
+<li><strong>Checks:</strong> <code>chthonic::map::parse_zones</code> (<code>map/zones.h</code> in <code>chthonic_map</code>) rejects, with the file and zone
+  (<code>maps/vale/zones.json: zone "a": not contiguous (tile 2_0 ...)</code>): bad JSON or fields, a duplicate or badly formed
+  id, a zone with no tiles, a zone tile not declared in <code>map.json</code>, two zones on one tile, a declared tile in no
+  zone, and a zone in pieces. <code>validate_zones</code> runs the same checks on an in-memory zone set and lists every
+  problem; <code>zone_at</code> finds the zone of a tile or a world x, z.</li>
+<li><strong>Server:</strong> the world server and <code>chthonic_mapbake</code> never read <code>zones.json</code> (a bad one does not stop the
+  server); the parser is in the shared library for clients and map tools. The client streams each zone's scene and
+  publishes <code>zone.left</code> / <code>zone.entered</code> locally; there is no server
+  zone tracking.</li>
+</ul>
+
+<h2 id="map-contexts">Map contexts</h2>
+<p>Like AzerothCore's one <code>Map</code> object per map, each map in use runs in its own context, and one realm context runs what
+belongs to no map. Contexts are updated one after another on the tick thread, or at once on <code>MAP_THREADS</code> workers
+(<a href="#threading">Threading</a>), and meet only at serial points.</p>
+<ul>
+<li><strong>A map context owns:</strong> a registry (every player and NPC on the map), an AOI grid, a Lua state (<code>npcs/</code> and
+  <code>systems/</code>, every <code>init</code> run when the context starts), the spawner and <a href="#tile-activation">tile activation</a>, an event bus,
+  and the inbound queues of its players (moves, chat, client events, interacts). The maps' immutable data (manifests, areas, ground,
+  navmesh, objects, spawn files) is loaded once and shared read-only, never copied per context.</li>
+<li><strong>When:</strong> <code>START_MAP</code>'s context starts with the scripts, at startup; any other map's the first time it is used (a
+  login or a transfer onto it, an NPC created there, a <code>chthonic.world.post</code> to it), as AzerothCore creates a map on demand. A map's
+  context then stays for the life of the process, like its tiles. Each logs <code>map context started</code> <code>{map, name}</code> at debug
+  level, and the realm <code>realm context started</code>.</li>
+<li><strong>The realm context:</strong> one per process. Its Lua state loads only <code>fsms/</code> and runs the game machines
+  (<code>GAME_STATE_MACHINES</code>); no map context starts them (<a href="state-machines.html#state-machines">State machines</a>). Its bus gets the game
+  machines' <code>fsm.changed</code> (passed on to every map's bus for its next drain) and posts to <code>"realm"</code> and <code>"all"</code>. It has no
+  systems: only server C++ subscribes there.</li>
+<li><strong>Isolation:</strong> while a context is updated it touches no other context: <code>chthonic.query</code>, <code>chthonic.get</code> and the rest see
+  its own map's entities only. What reaches past its map is queued for the next serial point: a transfer onto another map (a portal or
+  <code>chthonic.transfer</code>), <code>chthonic.create</code> onto another map, a destroyed NPC whose spawn file is another map's (it respawns there),
+  <code>chthonic.world.post</code>, a game machine change, and a <code>chthonic.broadcast</code>'s copy for the other maps' players.</li>
+<li><strong>Serial points:</strong> each tick runs: the realm's bus drain; a serial point (whatever C++ calls queued since the last tick);
+  movement and areas for every map; a serial point (portals onto another map, so the destination's interest pass sends their
+  <code>Spawn</code>s this tick); the rest of the tick for every map; a serial point (Lua's transfers, creates and game machine changes; posts
+  go onto their targets' buses here, for the next tick). Maps go in id order. A serial point does what was queued before it began; what
+  that queues waits for the next. Every <code>World</code> call from server C++ (a login, a logout, <code>World::transfer</code>) is one too.</li>
+<li><strong>Transfer onto another map,</strong> at a serial point, in this order: <code>onMapLeave(e)</code> in the old context's systems (and the
+  client events queued there so far are sent); <code>MapChange</code>, the <code>Despawn</code> of each old neighbour, theirs of it and
+  <code>area.leave</code> on the old map's bus; every component moved to the new context (the C++ ones and every Lua component, persisted or
+  not; a <code>StateMachine</code> keeps its current state; the entity id stays); <code>area.enter</code> on the new map's bus;
+  <code>onMapEnter(e, carried)</code> in the new context's systems (<a href="lua.html#systems">Lua</a>). A portal's <code>Spawn</code>s and area events
+  come in the portal tick, a <code>chthonic.transfer</code>'s in the next. Within a map a transfer is done at once, as before.</li>
+<li><strong>Entity ids:</strong> one process-wide index space, handed to the contexts in blocks (4096 ids for a world map, 256 for an instance copy); a context hands out the ids it freed
+  first (the last freed first, its version bumped) and then new ones from its block, so an id (the entity id on the wire and in Lua) is
+  unique across contexts and an entity keeps it when it changes context. The ids a context gets depend only on what it did itself.
+  With one context they are those a single registry would give. <code>MAX_NPCS</code> counts the NPCs of every context
+  (<a href="#threading">Threading</a>: how it is shared).</li>
+<li><strong>Sessions:</strong> a player's <code>Move</code>, <code>Say</code>, <code>ClientEvent</code> and <code>Interact</code> go to the context its character is
+  in now.</li>
+</ul>
+<h3 id="threading">Threading</h3>
+<p>Like AzerothCore's <code>MapUpdater</code> (<code>CONFIG_NUMTHREADS</code>), <code>MAP_THREADS</code> (default 1,
+<a href="configuration.html">Configuration</a>) workers update the map contexts at once.</p>
+<ul>
+<li><strong><code>MAP_THREADS=1</code>:</strong> no workers; every context updates on the tick thread, one after another in map id order.</li>
+<li><strong><code>MAP_THREADS=N</code>, N &gt; 1:</strong> N workers start with the server and stop at shutdown. Each tick has two update steps
+  (movement and areas; the rest of the tick). In each, every map context is one job; the workers take the jobs in turn and the tick
+  thread waits for all of them (a barrier) before the serial point that follows. The serial points, the realm context, logins, logouts
+  and everything else outside the two steps stay on the tick thread. One map never splits across workers: a single busy map is no faster
+  than with one thread.</li>
+<li><strong>Same result:</strong> with any <code>MAP_THREADS</code> the server sends every session the same messages, in the same order, and
+  saves the same, as with 1 (<code>checkParallelDifferential</code>, <a href="tests.html">Tests</a>). During a step a context touches only its own
+  data:
+  <ul>
+  <li>Its sends and saves wait in the context; after the barrier they go out context by context in map id order. A session is in one
+  context, so it gets its messages in the serial order; the network and the DB worker only ever see the tick thread.</li>
+  <li>Entity ids come from the context's own freed ids and block (above). Each context gets a spare block before each step, in map id
+  order, so a step can make a block of new ids (4096 on a world map) without asking anyone; past that it takes a block mid-step (unique ids still, but then which
+  block may vary with timing).</li>
+  <li><code>MAX_NPCS</code>: before each step what is left under the limit is split evenly among the contexts (map id order takes the
+  remainder). A context may create up to its share; it never takes another's, so the limit holds and what a context may create does not
+  depend on the others' timing. With one map that is exactly the old count. With several, a map can be refused an NPC while the
+  others' shares are unused; the shares are recomputed before every step.</li>
+  <li>Logging is thread-safe, the Lua script deadline is per thread, the maps' data is read only, and a navmesh path search
+  (<code>chthonic.map.path</code> may ask for another map's) takes that map's lock.</li>
+  </ul></li>
+<li><strong>C++ subscribers</strong> on a map's bus (<code>World::bus(map)</code>) run on whichever worker updates that map; the realm's bus stays on the
+  tick thread.</li>
+<li><strong>Cost:</strong> the tick stats lines show each context's update time (<a href="operations.html#tick-stats">Operations</a>). The bench
+  <code>map_threads_bench</code> (4 maps of 100 moving players and 100 Guards) runs a tick in under 40% of the 1-thread time with 4.</li>
+</ul>
+
+<h2 id="layers">Layers</h2>
+<p>Like WoW's layering or GW2's overflow, a crowded world map can run as several copies, <em>layers</em>, each holding at most
+<code>layerCap</code> players, so no copy gets crowded (interest management costs about players &times; players in view). Players in
+different layers of a map never see or hear each other; everything else about the map is the same.</p>
+<pre><code class="language-json">{ &quot;version&quot;: 1, &quot;id&quot;: 1, &quot;name&quot;: &quot;Eastlands&quot;, &quot;tiles&quot;: [[0, 0, 7, 7]],
+  &quot;spawn&quot;: {&quot;pos&quot;: [1024, 0, 1024]},
+  &quot;layerCap&quot;: 500, &quot;emptyTimeoutSec&quot;: 300 }
+</code></pre>
+<ul>
+<li><strong><code>layerCap</code>:</strong> optional, world maps only, an integer &ge; 1: players per layer (NPCs do not count). Without it the map
+  runs one context, exactly as before. On an instance map it fails the map (<code>maps/crypt/map.json: "layerCap" is only for world
+  maps; an instance map uses "maxPlayers"</code>), as does a value below 1 (<code>"layerCap" must be an integer &gt;= 1</code>).
+  <code>emptyTimeoutSec</code> (default 300) is allowed with it: how long an empty extra layer lives on. Parsed in <code>chthonic_map</code>, so
+  <code>chthonic_mapbake</code> and map tools check it too.</li>
+<li><strong>The base layer:</strong> instanceId 0, the map's ordinary context. It starts with the scripts, at startup, and never closes.</li>
+<li><strong>Extra layers</strong> are <a href="instances.html">instance copies</a> of the world map, made by the same machinery: each its own
+  <a href="#map-contexts">context</a> (registry, AOI grid, Lua state with its own <code>init</code>, tile activation and NPC spawns) with a
+  fresh instanceId from the instance counter, made and destroyed only at serial points. One with no players for the map's
+  <code>emptyTimeoutSec</code> runs its systems' <code>shutdown</code>, loses its NPCs and is destroyed, as an empty instance copy is. Each logs
+  <code>layer created</code> / <code>layer destroyed</code> <code>{map, instance}</code> (<a href="operations.html#layer-logs">Operations</a>).</li>
+<li><strong>Placement,</strong> for every arrival on the map (a login, a portal, a transfer from another map):
+  <ol>
+  <li>the systems' <a href="lua.html#systems"><code>layerFor(e, map)</code></a>, asked in system order: a live layer with room that one
+  returns is joined;</li>
+  <li>else the fullest live layer with room;</li>
+  <li>else a new layer.</li>
+  </ol>
+  Room is the player count at the last serial point plus the players already queued for that layer, as for an instance copy's
+  <code>maxPlayers</code>. There is no rebalancing: players are never moved between layers by the server.</li>
+<li><strong>Within the map</strong> a transfer or portal keeps the player in its layer. <code>chthonic.transfer(e, {map =, position =, layer =
+  id})</code> moves to that layer if it is live with room; else it returns <code>false</code> and publishes <code>instance.full</code>
+  <code>{entity, map, layer}</code>, nothing moves (<a href="lua.html#systems">Lua</a>).</li>
+<li><strong>Never refused:</strong> when no new layer can be made (instance ids exhausted, or entity ids low), the player joins the fullest
+  layer over its cap and <code>no new layer: overfilling the fullest</code> is logged (warn). A login or a transfer onto a world map is never
+  refused because of layers.</li>
+<li><strong>NPCs</strong> do not count towards the cap and never open a layer: an NPC transferred or <code>chthonic.create</code>d onto the map from
+  another goes to the base layer (or the live layer a <code>layer =</code> names). A layer's own NPCs come from its spawn files.</li>
+<li><strong>Threads:</strong> layers spread players over contexts, but with <code>MAP_THREADS=1</code> the contexts still update one after
+  another. Measured (2000 bots, <code>layerCap</code> 500, 4 layers): tick p99 about 33 ms at <code>MAP_THREADS=1</code>, about 12 ms at
+  <code>MAP_THREADS=4</code>. On a layered map set <code>MAP_THREADS</code> to about the expected layer count
+  (<a href="#threading">Threading</a>).</li>
+<li><strong>Relog:</strong> <code>characters.instance_id</code> holds the layer, as for an instance copy. On login the saved layer is rejoined if it is
+  live with room; else (full, closed, or a previous run's) placement, at the saved position (<code>saved layer not joinable; placing as a new
+  arrival</code>, logged). Rows with instance_id 0 go straight to placement. At a login there is no entity yet: the base layer's
+  <code>layerFor</code> is asked with <code>e</code> nil.</li>
+<li><strong>Chat:</strong> <code>/say</code>, yell and emote reach players in view in the same layer only (each layer has its own registry and grid).
+  Zone chat is per map id, so it spans every layer, unchanged (<a href="../chat/index.html">Chat</a>).</li>
+<li><strong>Lua:</strong> <code>chthonic.map.instance()</code> in a layer is <code>{id, map, layer = true, base}</code> (<code>base</code>: id 0). A
+  <code>chthonic.world.post</code> to the map reaches every layer's bus.</li>
+<li><strong>Admin:</strong> layers are listed in the admin port's instance list (map, instanceId, players, NPCs, empty timer; no key).</li>
+<li><strong>Load test:</strong> <code>LAYER_CAP=500 tests/load.sh</code> applies <code>layerCap</code> to <code>START_MAP</code> for one run
+  (<a href="tests.html#load">Tests</a>).</li>
+</ul>
+
+<h2 id="tile-activation">Tile activation</h2>
+<p>A tile is <em>near</em> a player when it is at most <code>ACTIVATION_TILES</code> (default 1: a 3&times;3 block) tiles from the player's tile,
+counted the long way round (Chebyshev: <code>max(|dx|, |dz|)</code>), on the player's map. Like AzerothCore's grids:</p>
+<ul>
+<li><strong>Loading:</strong> the first time a tile is near any player, its <a href="npcs.html#npc-spawns">spawn file</a> entries are spawned. The tile then stays
+  loaded for the life of the process: leaving it never despawns anything, and coming back spawns nothing twice. With
+  no player online a start spawns no spawn-file NPC; the files are still all parsed and checked at startup, and a bad
+  one still refuses the start. A login loads (and spawns) at once, so <code>onEnter</code> already sees the NPCs around the
+  character; a move or transfer onto a new tile loads it for the next tick's spawner.</li>
+<li><strong>Sleep:</strong> an NPC (spawn file or <code>chthonic.create</code>) whose tile is near no player is <a href="npcs.html#sleep">asleep</a>: Lua systems do
+  not see it in <code>chthonic.query</code>, so it does not patrol and its timers in Lua do not run.</li>
+<li><strong>When:</strong> only when a player or an NPC changes tile or map (a move, a transfer, a login, a logout, a creation), never
+  per tick for those that stay put. Keyed by (map, tile).</li>
+<li><strong>Visibility:</strong> unchanged. The view radius (<code>AOI_VIEW_RADIUS</code>, 128 m) is inside the 3&times;3 block whenever it is at most
+  256 m, so an NPC a player can see is always awake. A larger radius needs <code>ACTIVATION_TILES</code> of at least radius / 256
+  (rounded up), or a far NPC in view stands still until a player comes nearer.</li>
+<li><strong>Not unloaded:</strong> tiles never unload; ground, navmesh and objects are loaded for every tile at startup as before.</li>
+</ul>
+<h2 id="ground">Ground</h2>
+<p>The server has no physics engine; it knows the ground from the same heightmaps the client stands on.</p>
+<ul>
+<li><strong>Loading:</strong> at startup, each owned tile's <code>heights/&lt;tx&gt;_&lt;tz&gt;.r16</code> (tried first) or <code>.png</code> is decoded with
+  <code>chthonic_map</code>'s <code>decode_heights</code>. A tile without a file is flat at the map's <code>heightMin</code> (0 without <code>heightRange</code>). A
+  file that fails to decode refuses the start (<code>maps/hills/heights/0_0.png: png: 8-bit with 1 channel(s), need 16-bit
+  grayscale</code>).</li>
+<li><strong>Height:</strong> <code>Maps::ground(map, x, z)</code> is <code>chthonic_map</code>'s <code>ground_at</code>: the triangle under the point, the same triangles as
+  the client's Jolt heightfield, so client and server agree to within float rounding. Off the map's tiles it is empty.</li>
+<li><strong>Player moves:</strong> after the speed check, against the ground under the new position:<ul>
+<li>more than <code>MOVE_GROUND_TOLERANCE</code> (0.5 m) below it: accepted and lifted onto it;</li>
+<li>more than <code>MOVE_MAX_AIR</code> (6 m) above it and not lower than the last position: rejected (<code>Correction</code>), so no
+  flying or hovering;</li>
+<li>lower than the last position: accepted, however high (falling).</li>
+</ul>
+</li>
+<li><strong>Placement:</strong> NPCs always stand on the ground (<code>chthonic.create</code>, spawn files and <code>chthonic.set</code> of <code>Transform</code> ignore y).
+  Transfers and portals put players and NPCs on the ground at the destination. A character saved under the ground
+  (the heights changed since) enters on it.</li>
+<li><strong>Lua:</strong> <code>chthonic.map.ground(map, x, z)</code> is the height there, or <code>nil</code> off the map.</li>
+</ul>
+<h2 id="objects">Objects</h2>
+<p>Map objects are what a map places on its tiles besides the ground: grass and flowers, rocks and trees, a shrine a
+player can use. A map editor authors them;
+<code>map/objects.h</code> (part of <code>chthonic_map</code>) parses both files for the server, <code>chthonic_mapbake</code> and any client or tool linking it.</p>
+<table>
+<tr><th>Type</th><th>Client</th><th>Server</th></tr>
+<tr><td><code>visual</code></td><td>the prefab, no collision</td><td>nothing: never in a server file</td></tr>
+<tr><td><code>obstacle</code></td><td>the prefab and a static Jolt body from <code>shape</code></td><td>its shape is cut out of the navmesh</td></tr>
+<tr><td><code>interactable</code></td><td>as an obstacle, plus <code>chthonic.interact(id)</code></td><td>as an obstacle, plus its <code>.server/interactables</code> entry: an <code>Interact</code> in range publishes its event</td></tr>
+</table>
+<p><code>objects/&lt;tx&gt;_&lt;tz&gt;.json</code> (shipped with the game) lists every object of the tile; an object belongs to the tile its
+<code>pos</code> is in:</p>
+<pre><code class="language-json">{ &quot;version&quot;: 1, &quot;objects&quot;: [
+  {&quot;type&quot;: &quot;visual&quot;, &quot;prefab&quot;: &quot;prefabs/grass.prefab&quot;, &quot;pos&quot;: [120.5, 5.2, 131.0], &quot;yaw&quot;: 2.4, &quot;scale&quot;: 0.9},
+  {&quot;type&quot;: &quot;obstacle&quot;, &quot;prefab&quot;: &quot;prefabs/rock.prefab&quot;, &quot;pos&quot;: [141, 6.1, 108], &quot;yaw&quot;: 0.3,
+   &quot;shape&quot;: {&quot;cylinder&quot;: {&quot;radius&quot;: 1.2, &quot;height&quot;: 1.4}}},
+  {&quot;type&quot;: &quot;interactable&quot;, &quot;prefab&quot;: &quot;prefabs/shrine.prefab&quot;, &quot;pos&quot;: [118, 6.4, 140], &quot;yaw&quot;: 0.4, &quot;id&quot;: 1,
+   &quot;name&quot;: &quot;Meadow Shrine&quot;, &quot;shape&quot;: {&quot;box&quot;: {&quot;halfExtents&quot;: [1.2, 1.25, 1.2]}}} ] }
+</code></pre>
+<ul>
+<li><strong>Every object:</strong> <code>type</code>, <code>prefab</code> (a project-relative <code>.prefab</code>), <code>pos</code> [x, y, z] on the tile; optional <code>yaw</code>
+  (radians about +y, like <code>heading</code>: 0 faces +z, default 0) and <code>scale</code> (uniform, &gt; 0, default 1; it scales the prefab
+  only).</li>
+<li><strong>Shapes</strong> (obstacles and interactables must have one; a visual's is not read): <code>{"box": {"halfExtents": [x, y, z]}}</code>,
+  turned by <code>yaw</code>, or an upright <code>{"cylinder": {"radius": r, "height": h}}</code>, every number &gt; 0, in metres. A shape stands on
+  <code>pos</code> (its base at <code>pos.y</code>) and is not scaled with the prefab, so the collision and the navmesh cut are exactly what the file
+  says, whatever the prefab looks like.</li>
+<li><strong>Interactables</strong> also carry <code>id</code> (1-4294967295, unique on the map): what the client sends in <code>Interact</code>. <code>name</code> is
+  optional, for the game's prompts (<code>chthonic.nearestInteractable</code>).</li>
+<li><code>.server/interactables/&lt;tx&gt;_&lt;tz&gt;.json</code> (server only, never packaged: the build skips dot-folders) has one entry per
+  interactable of the tile, with what only the server needs:</li>
+</ul>
+<pre><code class="language-json">{ &quot;version&quot;: 1, &quot;interactables&quot;: [
+  {&quot;id&quot;: 1, &quot;pos&quot;: [118, 6.4, 140], &quot;yaw&quot;: 0.4, &quot;shape&quot;: {&quot;box&quot;: {&quot;halfExtents&quot;: [1.2, 1.25, 1.2]}},
+   &quot;range&quot;: 3, &quot;event&quot;: &quot;shrine.activated&quot;, &quot;name&quot;: &quot;Meadow Shrine&quot;,
+   &quot;data&quot;: {&quot;message&quot;: &quot;The shrine hums softly. You feel refreshed.&quot;}} ] }
+</code></pre>
+<ul>
+<li><code>id</code>, <code>pos</code> (on the tile), <code>shape</code> and <code>event</code> (a non-empty event name, at most 255 bytes) are required; <code>yaw</code>,
+  <code>range</code> (metres, &gt; 0, default 3), <code>data</code> (a JSON object, at most 31 deep so the event payload stays within the bus's 32) and
+  <code>name</code> are optional. The Map Builder writes <code>pos</code>, <code>yaw</code>, <code>shape</code> and <code>name</code> from the object and keeps the rest.</li>
+<li><strong>Range</strong> is the horizontal distance from the player's position to the shape's edge (0 inside it):
+  <code>map::footprint_distance</code>, the same on the client's <code>chthonic.nearestInteractable</code>.</li>
+<li><strong>Unknown keys</strong> are ignored in both files, so tools may keep their own.</li>
+<li><strong>Startup:</strong> the server loads the interactables files of its owned tiles (<code>Maps::owns</code>). A bad file name, a file for a
+  tile not on the map, bad JSON, a bad entry, an id used twice on the map or bad <code>data</code> refuses the start with the file and
+  the problem (<code>maps/hills/.server/interactables/0_1.json: interactable 1: "range" must be a number &gt; 0 (metres)</code>).</li>
+<li><strong>Interact:</strong> a player's <code>Interact{objectId}</code> (<a href="protocol.html#interact">protocol</a>) is checked on the next tick: the
+  id must be an interactable of the player's current map, and the player within its <code>range</code>. Then its <code>event</code> is published
+  on the server bus as <code>{entity, map, object, data}</code> (<code>data</code> absent if the file has none; <a href="events.html#interactables">Events</a>).
+  An unknown id, another map's object or a player out of range publishes nothing and logs <code>interact rejected</code> at
+  debug level (<code>reason</code> <code>not on this map</code> or <code>out of range</code>). There is no reply message: the game's Lua answers if it
+  wants to. <code>Interact</code> counts toward the session's message rate limit like every message.</li>
+<li><strong>Blocking</strong> is the navmesh only: the server has no physics, so obstacles stop players and NPCs through the
+  <a href="#navmesh">Navmesh</a> cut (a move into one is <code>off_mesh</code>), and NPC paths go round them. The check's 0.5 m tolerance
+  (made for the <code>agentRadius</code> shrink at cliffs) applies here too, so a player may graze up to about half a metre into
+  a footprint's rim without a <code>Correction</code>; anything deeper is corrected (a 1.2 m rock accepts its
+  player down to about 1 m from its centre). Clients block at the shape itself. Visuals never reach the server.</li>
+<li><strong>Bad client entries:</strong> the game client logs each bad entry or missing prefab with the file and skips it, keeping the
+  rest. <code>chthonic_mapbake</code> refuses any bad entry.</li>
+</ul>
+<h2 id="navmesh">Navmesh</h2>
+<p>The ground says how high a player is, not whether they could have walked there. A map can carry a baked navmesh
+(Recast/Detour) of where its agents can walk; the server checks player moves against it and NPCs path on it.</p>
+<ul>
+<li>
+<p><strong>Baking:</strong> <code>chthonic_mapbake</code> lints a map and bakes its navtiles: see the <a href="../../world/tools/mapbake/docs/index.html">Map Bake docs</a>.</p>
+</li>
+<li><strong>Obstacles:</strong> the bake reads <code>objects/</code> and cuts every obstacle's and interactable's shape out of the walkable
+  area (Recast area marking: <code>rcMarkConvexPolyArea</code> for a box's turned footprint, <code>rcMarkCylinderArea</code> for a cylinder),
+  before the <code>agentRadius</code> erosion, so the mesh keeps that clearance round each one as it does round a cliff. A tile's
+  bake includes its neighbours' objects that reach over its border. The whole column under a footprint is cut, whatever
+  the shape's height. Visuals are ignored. A player can then not stand inside one (<code>off_mesh</code>, <code>Correction</code>), and
+  <code>chthonic.map.path</code> goes round them. After adding, moving or removing a blocking object, re-bake.</li>
+<li>
+<p><strong>Navtile format:</strong> a 12-byte little-endian header, <code>{'KNAV', u32 version (1), u32 Detour DT_NAVMESH_VERSION (7)}</code>,
+  then the Detour tile from <code>dtCreateNavMeshData</code> for tile (tx, tz) (<code>map/navtile.h</code>).</p>
+</li>
+<li><strong>Loading:</strong> at startup, each owned tile's navtile goes into one <code>dtNavMesh</code> per map (<code>server/world/nav.cpp</code>, the only
+  file that includes Detour), sized for the map's declared tiles. A bad magic, an unknown navtile or Detour version, a
+  tile baked for another tile, or too many polygons refuses the start with the file and the reason
+  (<code>maps/hills/.server/nav/0_0.navtile: navtile version 99, this server reads 1 (rebake with chthonic_mapbake)</code>). A map
+  without navtiles has no navmesh and keeps the <a href="#ground">Ground</a> rules only.</li>
+<li><strong>Player moves:</strong> with <code>MOVE_NAV_CHECK=1</code> (default), on a map with a navmesh, a move must end within 0.5 m across
+  (the bake's <code>agentRadius</code> shrink at walkable edges) and <code>MOVE_MAX_AIR</code> up or down of a navmesh polygon. Otherwise
+  the verdict is <code>off_mesh</code> and the client gets <code>Correction</code> at once, spending no move budget: walking up a cliff face
+  or onto a slope steeper than <code>maxSlopeDeg</code> is snapped back. No grace period, so a player cannot drop off a cliff
+  face either.</li>
+<li><strong>NPC paths:</strong> <code>chthonic.map.path(map, from, to)</code> (<code>{x, y, z}</code> tables) is the straight path along the navmesh: a list of
+  <code>{x, y, z}</code> points from <code>from</code> snapped onto the mesh to <code>to</code> snapped onto it, with the corners between. It is <code>nil</code>
+  when the map has no navmesh, either end is more than 2 m across (or 4 m up or down) from it, or <code>to</code> cannot be
+  reached. The sample <code>systems/npcs.lua</code> walks these corners between a patrol's points, so the hills' Sentry goes
+  round the mesa its route crosses.</li>
+<li><strong>Limits:</strong> Detour's poly refs are 32-bit here: tile bits + polygon bits &lt;= 22, so the polygons a tile may have
+  shrink as the map grows (<code>map::max_navtile_polys</code>): 65,536 at 8 x 8, 16,384 at 16 x 16, 4,096 at 32 x 32 and 1,024 at 64 x 64. Generated relief at 0.5 m cells peaks at 358-419 polygons a tile (2.9x headroom at 64 x 64).
+  <code>chthonic_mapbake</code> fails on a tile over the limit, naming its polygons, the limit and the map's tile count, before the rest
+  bakes; a navtile over it (baked for a smaller map) refuses the start. <code>DT_POLYREF64</code> (Detour rebuilt, not needed so far)
+  lifts it. Paths are capped by <code>kMaxNodes</code> 4096, <code>kMaxPathPolys</code> 1024 and <code>kMaxPathPoints</code> 256
+  (<code>nav.cpp</code>): a path across much of a big map can come back <code>nil</code>.
+  No dynamic obstacles (an object that stops blocking, such as an opened door) or off-mesh links
+  (jumps, ladders) in the bake, and the client does no pathing.</li>
+<li><strong>Sample:</strong> the sample maps' <code>hills</code> (in <code>MAPS_DIR</code>) has a mesa (x 170-200, z 316-346, 25 m flat top, 81 degree walls) and the
+  Sentry (<code>.server/spawns/0_1.json</code>) patrolling from (150, 331) to (215, 331), straight through it and through a 3 m obstacle
+  crate at (160, 331) (<code>objects/0_1.json</code>). Its other fixtures: a visual crate at (248, 244), an obstacle crate at (266, 248)
+  and interactable 1 "Test Shrine" at (250, 266) (event <code>test.shrine</code>). Its baked navtiles are in <code>.server/nav/</code>; ctest
+  <code>mapbake_cli</code> fails if they no longer match a fresh bake.</li>
+</ul>
+</main>
+</div>
+</body>
+</html>

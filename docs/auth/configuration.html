@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Configuration - Chthonic Auth Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="index.html">Auth Server</a><a href="../world/index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Auth Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html" class="active">Configuration</a></li><li><a href="endpoints.html">Endpoints</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="token-verification.html">Token verification</a></li></ul></nav>
+<main>
+<h1 id="configuration">Configuration</h1>
+<p>All configuration comes from environment variables. They are validated with zod at startup, and the process exits with a list of every bad or missing variable. docker compose reads <code>.env</code> and then overrides <code>DB_HOST</code>, <code>DB_PORT</code>, <code>SMTP_HOST</code>, <code>SMTP_PORT</code>, <code>PORT</code> and <code>KEYS_DIR</code> for the container network.</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PORT</code></td>
+<td><code>3000</code></td>
+<td>HTTP port</td>
+</tr>
+<tr>
+<td><code>TRUST_PROXY</code></td>
+<td><code>false</code></td>
+<td>Express <code>trust proxy</code> (<code>true</code>, a hop count, or subnets). Set this behind a load balancer so rate limits see the client IP</td>
+</tr>
+<tr>
+<td><code>APP_BASE_URL</code></td>
+<td>required</td>
+<td>Base URL of the page that handles email links: <code>&lt;base&gt;/verify-email?token=…</code> and <code>&lt;base&gt;/reset-password?token=…</code>. That page POSTs the token to this API</td>
+</tr>
+<tr>
+<td><code>DB_HOST</code> / <code>DB_PORT</code></td>
+<td>required / <code>3306</code></td>
+<td>MySQL address</td>
+</tr>
+<tr>
+<td><code>DB_USER</code> / <code>DB_PASSWORD</code> / <code>DB_NAME</code></td>
+<td>required</td>
+<td>MySQL credentials and database. compose also uses them to create the user and database</td>
+</tr>
+<tr>
+<td><code>TEST_DB_NAME</code></td>
+<td><code>chthonic_auth_test</code></td>
+<td>Database used by <code>npm test</code></td>
+</tr>
+<tr>
+<td><code>MYSQL_ROOT_PASSWORD</code></td>
+<td>required by compose</td>
+<td>Root password of the mysql container</td>
+</tr>
+<tr>
+<td><code>MYSQL_PORT</code></td>
+<td><code>3306</code></td>
+<td>Host port published by the mysql container</td>
+</tr>
+<tr>
+<td><code>SMTP_HOST</code> / <code>SMTP_PORT</code></td>
+<td>required</td>
+<td>SMTP server (Mailpit: <code>127.0.0.1:1025</code>)</td>
+</tr>
+<tr>
+<td><code>SMTP_SECURE</code></td>
+<td><code>false</code></td>
+<td><code>true</code> for implicit TLS (port 465)</td>
+</tr>
+<tr>
+<td><code>SMTP_USER</code> / <code>SMTP_PASSWORD</code></td>
+<td>empty</td>
+<td>SMTP auth. Leave empty for none</td>
+</tr>
+<tr>
+<td><code>MAIL_FROM</code></td>
+<td>required</td>
+<td>From header</td>
+</tr>
+<tr>
+<td><code>JWT_ISSUER</code> / <code>JWT_AUDIENCE</code></td>
+<td>required</td>
+<td><code>iss</code> / <code>aud</code> claims</td>
+</tr>
+<tr>
+<td><code>ACCESS_TOKEN_TTL_SECONDS</code></td>
+<td><code>900</code></td>
+<td>Access token lifetime</td>
+</tr>
+<tr>
+<td><code>REFRESH_TOKEN_TTL_DAYS</code></td>
+<td><code>30</code></td>
+<td>Refresh token lifetime. Each rotation starts a new full period</td>
+</tr>
+<tr>
+<td><code>EMAIL_VERIFY_TTL_HOURS</code></td>
+<td><code>24</code></td>
+<td>Verification link lifetime</td>
+</tr>
+<tr>
+<td><code>PASSWORD_RESET_TTL_MINUTES</code></td>
+<td><code>60</code></td>
+<td>Reset link lifetime</td>
+</tr>
+<tr>
+<td><code>JWT_PRIVATE_KEY</code></td>
+<td>empty</td>
+<td>RSA private key, PKCS#8 or PKCS#1 PEM. <code>\n</code> escapes are accepted</td>
+</tr>
+<tr>
+<td><code>JWT_PRIVATE_KEY_FILE</code></td>
+<td>empty</td>
+<td>Path to the PEM file instead, e.g. a mounted secret. Set only one of the two</td>
+</tr>
+<tr>
+<td><code>JWT_KID</code></td>
+<td>RFC 7638 thumbprint</td>
+<td>Key id put in the JWT header and the JWKS</td>
+</tr>
+<tr>
+<td><code>KEYS_DIR</code></td>
+<td><code>./keys</code></td>
+<td>Where the dev key is generated when no key is configured. compose uses <code>/app/keys</code> on volume <code>auth-keys</code></td>
+</tr>
+<tr>
+<td><code>SEED_ADMIN_EMAIL</code> / <code>SEED_ADMIN_PASSWORD</code></td>
+<td>empty</td>
+<td>First admin, created pre-verified on startup if no account has that email. Set both or neither. An existing account with that email is never changed</td>
+</tr>
+</tbody>
+</table>
+<p>Production: always set <code>JWT_PRIVATE_KEY</code> or <code>JWT_PRIVATE_KEY_FILE</code>. The dev-key fallback is meant for local use only. To generate a key: <code>openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out jwt-private.pem</code>.</p>
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security behaviour - Chthonic Auth Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="index.html">Auth Server</a><a href="../world/index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Auth Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="endpoints.html">Endpoints</a></li><li><a href="security.html" class="active">Security behaviour</a></li><li><a href="token-verification.html">Token verification</a></li></ul></nav>
+<main>
+<h1 id="security-behaviour">Security behaviour</h1>
+<ul>
+<li><strong>No account discovery.</strong><ul>
+<li>register, resend-verification and forgot-password return identical responses for every email.</li>
+<li>Login returns <code>invalid_credentials</code> for both an unknown email and a wrong password. An unknown email still runs a bcrypt comparison, so both cases take about the same time.</li>
+<li>Emails are sent fire-and-forget, so the time to send an email doesn't show up in response times either.</li>
+</ul>
+</li>
+<li><strong>Login check order.</strong> Checks run in this order: lockout, password, email verified, ban. <code>email_not_verified</code> and <code>account_banned</code> are only returned once the password is correct.</li>
+<li><strong>Lockout.</strong><ul>
+<li>5 consecutive wrong passwords lock the account for 15 minutes. While it's locked, even the correct password gets <code>423 account_locked</code>.</li>
+<li>A successful login or a password reset clears the counter.</li>
+<li>Trade-off: lockout only happens to accounts that exist, so a client that sends 5 wrong passwords can learn whether that email is registered.</li>
+</ul>
+</li>
+<li><strong>Rate limiting.</strong><ul>
+<li>Fixed windows per IP, stored in MySQL, so limits survive restarts and are shared by every instance.</li>
+<li>Expired rows are deleted on each write.</li>
+<li>Because the windows are fixed, a client can send up to twice the limit in a short burst across a window boundary.</li>
+</ul>
+</li>
+<li><strong>Passwords.</strong><ul>
+<li>Passwords must be 10–128 characters and are hashed with bcrypt at cost 12.</li>
+<li>bcrypt only reads the first 72 bytes, so each password is first SHA-256 hashed (base64). That way every character of a 128-character password counts.</li>
+</ul>
+</li>
+<li><strong>Tokens at rest.</strong> Refresh, verification and reset tokens are 256-bit random values. Only their SHA-256 hashes are stored.</li>
+<li><strong>Refresh rotation.</strong><ul>
+<li>Each refresh consumes the token it was given.</li>
+<li>Presenting an already-rotated token revokes the whole session (token family).</li>
+<li>The check is strict: if a client sends two refreshes in parallel with the same token, its session is revoked.</li>
+</ul>
+</li>
+<li><strong>Logs</strong> never contain passwords, tokens, request bodies or SQL parameters.</li>
+</ul>
+</main>
+</div>
+</body>
+</html>

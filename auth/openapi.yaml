@@ -1,0 +1,934 @@
+openapi: 3.1.0
+info:
+  title: Chthonic Authentication API
+  version: 0.1.0
+  summary: Accounts, sessions, bans, roles and the realm list for Chthonic MMORPG services.
+  description: |
+    Issues RS256 access tokens (15 min) and rotating opaque refresh tokens (30 days).
+    Other services (e.g. the World Server) verify access tokens offline using
+    `GET /.well-known/jwks.json`, checking `iss`, `aud`, `exp` and the `kid` header.
+
+    **Ban gap:** banning revokes refresh tokens immediately, but access tokens already
+    issued stay valid until they expire (at most 15 minutes).
+
+    **Role gap:** a role change appears in the next issued access token; current tokens keep
+    the old role until they expire.
+
+    All errors use the shape `{"error": {"code": "...", "message": "...", "details": ...}}`.
+    `details` is present only for some codes.
+
+    Error codes: `validation_error` (400), `invalid_token` (400), `cannot_modify_self` (400),
+    `unauthorized` (401), `invalid_credentials` (401), `invalid_refresh_token` (401),
+    `email_not_verified` (403), `account_banned` (403), `forbidden` (403),
+    `not_found` (404), `account_not_found` (404), `realm_not_found` (404),
+    `realm_name_taken` (409), `email_taken` (409), `payload_too_large` (413), `account_locked` (423),
+    `rate_limited` (429), `internal_error` (500), `db_unavailable` (503).
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+  - url: http://localhost:3000
+    description: Local docker compose
+
+tags:
+  - name: system
+    description: Health and public signing keys
+  - name: auth
+    description: Registration, login, sessions and password recovery
+  - name: account
+    description: The calling account
+  - name: realms
+    description: World server list for players
+  - name: admin
+    description: |
+      Account moderation and realm management. Admin-only, except that GMs (role=gm) may list and
+      view accounts and ban/unban, and only on accounts whose role is `player`.
+
+paths:
+  /health:
+    get:
+      tags: [system]
+      operationId: getHealth
+      summary: Liveness plus a database check
+      security: []
+      responses:
+        '200':
+          description: Service and database are up
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, db]
+                properties:
+                  status: { const: ok }
+                  db: { const: ok }
+        '503':
+          description: Database unreachable (`db_unavailable`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /.well-known/jwks.json:
+    get:
+      tags: [system]
+      operationId: getJwks
+      summary: Public signing keys (JWK Set) for verifying access tokens
+      security: []
+      responses:
+        '200':
+          description: JWK Set. Cacheable for 5 minutes.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Jwks' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/auth/register:
+    post:
+      tags: [auth]
+      operationId: register
+      summary: Create an unverified account and email a verification link
+      description: |
+        Always answers 202 with the same body, whether or not the email is already registered,
+        so it cannot be used to discover accounts. The owner of an existing account receives a
+        notice email (or a fresh verification link if still unverified). Rate limit: 5/hour/IP.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Credentials' }
+      responses:
+        '202': { $ref: '#/components/responses/CheckEmail' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/auth/verify-email:
+    post:
+      tags: [auth]
+      operationId: verifyEmail
+      summary: Mark the account verified using the emailed token (single use, 24h)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TokenRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/Message' }
+        '400':
+          description: '`validation_error`, or `invalid_token` when the token is unknown, expired or already used'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/auth/resend-verification:
+    post:
+      tags: [auth]
+      operationId: resendVerification
+      summary: Send a new verification email if the account exists and is unverified
+      description: Always answers 202 with the same body. Rate limit 5/hour/IP.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmailRequest' }
+      responses:
+        '202': { $ref: '#/components/responses/CheckEmail' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Exchange email and password for an access and refresh token
+      description: |
+        Rate limit: 20/minute/IP. Five consecutive wrong passwords lock the account for 15 minutes
+        (`423 account_locked`); a successful login resets the counter. Unknown email and wrong
+        password both return `401 invalid_credentials`. `email_not_verified` and `account_banned`
+        are only returned once the password is correct.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                password: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        '200': { $ref: '#/components/responses/Session' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401':
+          description: '`invalid_credentials`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: '`email_not_verified`, or `account_banned` with ban details'
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/Error'
+                  - $ref: '#/components/schemas/BannedError'
+        '423':
+          description: '`account_locked`; `details.lockedUntil` says when it unlocks'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LockedError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/auth/refresh:
+    post:
+      tags: [auth]
+      operationId: refresh
+      summary: Rotate a refresh token and get a new token pair
+      description: |
+        The presented token is consumed. Presenting an already-rotated token revokes the whole
+        session (token family), so the newest token stops working too.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/Session' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401':
+          description: '`invalid_refresh_token` (unknown, expired, revoked or reused)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: '`account_banned` with ban details'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BannedError' }
+
+  /v1/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Revoke the session (token family) a refresh token belongs to
+      description: Idempotent; unknown tokens also return 204.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+      responses:
+        '204': { description: Session revoked }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /v1/auth/forgot-password:
+    post:
+      tags: [auth]
+      operationId: forgotPassword
+      summary: Email a password reset link (1h, single use) if the account exists
+      description: Always answers 202 with the same body. Rate limit 5/hour/IP.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmailRequest' }
+      responses:
+        '202': { $ref: '#/components/responses/CheckEmail' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/auth/reset-password:
+    post:
+      tags: [auth]
+      operationId: resetPassword
+      summary: Set a new password using the emailed token
+      description: |
+        Revokes every refresh token of the account, clears any lockout, invalidates other
+        outstanding reset links and marks the email verified.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string, minLength: 1, maxLength: 512 }
+                password: { $ref: '#/components/schemas/Password' }
+      responses:
+        '200': { $ref: '#/components/responses/Message' }
+        '400':
+          description: '`validation_error`, or `invalid_token` when the token is unknown, expired or already used'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/me:
+    get:
+      tags: [account]
+      operationId: getMe
+      summary: The calling account
+      responses:
+        '200':
+          description: Account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Account' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/realms:
+    get:
+      tags: [realms]
+      operationId: listRealms
+      summary: All realms ordered by sortOrder (without the internal admin endpoint)
+      responses:
+        '200': { $ref: '#/components/responses/PublicRealmList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/admin/accounts:
+    get:
+      tags: [admin]
+      operationId: listAccounts
+      summary: Search accounts, ordered by id (admin, or GM for player accounts only)
+      description: |
+        GMs only ever get `player` accounts; a GM asking for `role=gm` or `role=admin` gets 403.
+      parameters:
+        - name: q
+          in: query
+          description: Email substring (case-insensitive), or an exact id when all digits
+          schema: { type: string, maxLength: 254 }
+        - name: role
+          in: query
+          schema: { $ref: '#/components/schemas/Role' }
+        - name: banned
+          in: query
+          description: Has an active ban
+          schema: { type: string, enum: ['true', 'false'] }
+        - name: verified
+          in: query
+          description: Email verified
+          schema: { type: string, enum: ['true', 'false'] }
+        - name: locked
+          in: query
+          description: Locked out by failed logins right now
+          schema: { type: string, enum: ['true', 'false'] }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: One page of accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accounts, total, limit, offset]
+                properties:
+                  accounts:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminAccount' }
+                  total: { type: integer, description: Accounts matching the filter across all pages }
+                  limit: { type: integer }
+                  offset: { type: integer }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [admin]
+      operationId: createAccount
+      summary: Create an account that is already email-verified (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { $ref: '#/components/schemas/Email' }
+                password: { $ref: '#/components/schemas/Password' }
+                role:
+                  allOf: [{ $ref: '#/components/schemas/Role' }]
+                  default: player
+      responses:
+        '201':
+          description: Created account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminAccount' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: '`email_taken`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/admin/accounts/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [admin]
+      operationId: getAccount
+      summary: Account detail with full ban history (admin, or GM for a player account)
+      responses:
+        '200':
+          description: Account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountDetail' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/AccountNotFound' }
+    delete:
+      tags: [admin]
+      operationId: deleteAccount
+      summary: Hard-delete an account with its bans, sessions and email tokens (admin only)
+      description: Access tokens already issued stay valid until they expire.
+      responses:
+        '204': { description: Deleted }
+        '400':
+          description: '`validation_error`, or `cannot_modify_self` when deleting yourself'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/AccountNotFound' }
+
+  /v1/admin/accounts/{id}/verify-email:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [admin]
+      operationId: verifyAccountEmail
+      summary: Mark the email verified (admin only; idempotent)
+      responses:
+        '204': { description: Verified }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/AccountNotFound' }
+
+  /v1/admin/accounts/{id}/password-reset:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [admin]
+      operationId: sendAccountPasswordReset
+      summary: Email the account the normal password reset link (admin only)
+      responses:
+        '204': { description: Reset email queued }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/AccountNotFound' }
+
+  /v1/admin/accounts/{id}/unlock:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [admin]
+      operationId: unlockAccount
+      summary: Clear the failed-login count and lockout (admin only)
+      responses:
+        '204': { description: Unlocked }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/AccountNotFound' }
+
+  /v1/admin/accounts/{id}/revoke-sessions:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [admin]
+      operationId: revokeAccountSessions
+      summary: Revoke every refresh token; access tokens already issued live until they expire (admin only)
+      responses:
+        '204': { description: Revoked }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/AccountNotFound' }
+
+  /v1/admin/accounts/{id}/ban:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [admin]
+      operationId: banAccount
+      summary: Ban an account (replaces any active ban) and revoke all its refresh tokens (admin, or GM for a player)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500 }
+                expiresAt:
+                  type: [string, 'null']
+                  format: date-time
+                  description: Must be in the future. Absent or null means permanent.
+      responses:
+        '201':
+          description: Ban created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ban' }
+        '400':
+          description: '`validation_error`, or `cannot_modify_self` when banning yourself'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/AccountNotFound' }
+    delete:
+      tags: [admin]
+      operationId: unbanAccount
+      summary: Lift any active ban (idempotent; admin, or GM for a player)
+      responses:
+        '204': { description: No active ban remains }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/AccountNotFound' }
+
+  /v1/admin/accounts/{id}/role:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    put:
+      tags: [admin]
+      operationId: setAccountRole
+      summary: Change an account's role; applies to the next issued access token (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { $ref: '#/components/schemas/Role' }
+      responses:
+        '200':
+          description: Updated account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Account' }
+        '400':
+          description: '`validation_error`, or `cannot_modify_self` when changing your own role'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/AccountNotFound' }
+
+  /v1/admin/realms:
+    get:
+      tags: [admin]
+      operationId: adminListRealms
+      summary: All realms ordered by sortOrder
+      responses:
+        '200': { $ref: '#/components/responses/RealmList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [admin]
+      operationId: createRealm
+      summary: Create a realm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RealmInput' }
+      responses:
+        '201': { $ref: '#/components/responses/Realm' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/RealmNameTaken' }
+
+  /v1/admin/realms/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [admin]
+      operationId: getRealm
+      summary: One realm
+      responses:
+        '200': { $ref: '#/components/responses/Realm' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/RealmNotFound' }
+    put:
+      tags: [admin]
+      operationId: updateRealm
+      summary: Replace a realm (omitted status/sortOrder reset to their defaults)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RealmInput' }
+      responses:
+        '200': { $ref: '#/components/responses/Realm' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/RealmNotFound' }
+        '409': { $ref: '#/components/responses/RealmNameTaken' }
+    delete:
+      tags: [admin]
+      operationId: deleteRealm
+      summary: Delete a realm
+      responses:
+        '204': { description: Deleted }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/RealmNotFound' }
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: RS256 access token from login or refresh.
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      description: Positive integer id
+      schema: { type: integer, minimum: 1 }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          additionalProperties: false
+          properties:
+            code: { type: string, pattern: '^[a-z][a-z0-9_]*$', examples: [invalid_credentials] }
+            message: { type: string }
+            details: {}
+    ValidationErrorBody:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, details]
+          properties:
+            code: { const: validation_error }
+            message: { type: string }
+            details:
+              type: array
+              items:
+                type: object
+                required: [path, message]
+                properties:
+                  path: { type: string, description: 'Dot path of the bad field; empty for the whole body' }
+                  message: { type: string }
+    BannedError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, details]
+          properties:
+            code: { const: account_banned }
+            message: { type: string }
+            details:
+              type: object
+              required: [reason, expiresAt]
+              properties:
+                reason: { type: string }
+                expiresAt: { type: [string, 'null'], format: date-time, description: null means permanent }
+    LockedError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, details]
+          properties:
+            code: { const: account_locked }
+            message: { type: string }
+            details:
+              type: object
+              required: [lockedUntil]
+              properties:
+                lockedUntil: { type: string, format: date-time }
+    Email:
+      type: string
+      format: email
+      maxLength: 254
+      description: Case-insensitive; trimmed and lower-cased by the server.
+    Password:
+      type: string
+      minLength: 10
+      maxLength: 128
+    Credentials:
+      type: object
+      required: [email, password]
+      properties:
+        email: { $ref: '#/components/schemas/Email' }
+        password: { $ref: '#/components/schemas/Password' }
+    EmailRequest:
+      type: object
+      required: [email]
+      properties:
+        email: { $ref: '#/components/schemas/Email' }
+    TokenRequest:
+      type: object
+      required: [token]
+      properties:
+        token: { type: string, minLength: 1, maxLength: 512 }
+    RefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken: { type: string, minLength: 1, maxLength: 512 }
+    Session:
+      type: object
+      required: [tokenType, accessToken, expiresIn, accessTokenExpiresAt, refreshToken, refreshTokenExpiresAt]
+      properties:
+        tokenType: { const: Bearer }
+        accessToken:
+          type: string
+          description: 'RS256 JWT. Header: alg, kid, typ. Claims: sub (account id), email, role, iss, aud, iat, exp.'
+        expiresIn: { type: integer, description: Access token lifetime in seconds, examples: [900] }
+        accessTokenExpiresAt: { type: string, format: date-time }
+        refreshToken: { type: string, description: Opaque 256-bit value; single use }
+        refreshTokenExpiresAt: { type: string, format: date-time }
+    Role:
+      type: string
+      enum: [player, gm, admin]
+    Account:
+      type: object
+      required: [id, email, role, emailVerified, createdAt]
+      properties:
+        id: { type: integer }
+        email: { type: string, format: email }
+        role: { $ref: '#/components/schemas/Role' }
+        emailVerified: { type: boolean }
+        createdAt: { type: string, format: date-time }
+    Ban:
+      type: object
+      required: [id, accountId, reason, expiresAt, bannedBy, createdAt]
+      properties:
+        id: { type: integer }
+        accountId: { type: integer }
+        reason: { type: string }
+        expiresAt: { type: [string, 'null'], format: date-time }
+        bannedBy: { type: [integer, 'null'], description: null once the banning account is deleted }
+        createdAt: { type: string, format: date-time }
+    BanHistory:
+      allOf:
+        - $ref: '#/components/schemas/Ban'
+        - type: object
+          required: [liftedAt, liftedBy]
+          properties:
+            liftedAt: { type: [string, 'null'], format: date-time }
+            liftedBy: { type: [integer, 'null'] }
+    AdminAccount:
+      allOf:
+        - $ref: '#/components/schemas/Account'
+        - type: object
+          required: [emailVerifiedAt, failedLoginCount, lockedUntil, activeBan]
+          properties:
+            emailVerifiedAt: { type: [string, 'null'], format: date-time }
+            failedLoginCount: { type: integer }
+            lockedUntil: { type: [string, 'null'], format: date-time, description: Locked while in the future }
+            activeBan:
+              description: The newest ban that is neither lifted nor expired
+              oneOf:
+                - $ref: '#/components/schemas/Ban'
+                - type: 'null'
+    AccountDetail:
+      allOf:
+        - $ref: '#/components/schemas/AdminAccount'
+        - type: object
+          required: [bans]
+          properties:
+            bans:
+              type: array
+              description: Every ban, newest first
+              items: { $ref: '#/components/schemas/BanHistory' }
+    RealmInput:
+      type: object
+      required: [name, host, port, region]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64, description: Unique }
+        host: { type: string, minLength: 1, maxLength: 255 }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        adminHost:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 255
+          default: null
+          description: Internal world admin endpoint host. Set together with adminPort, or neither.
+        adminPort: { type: [integer, 'null'], minimum: 1, maximum: 65535, default: null }
+        region: { type: string, minLength: 1, maxLength: 32 }
+        status: { type: string, enum: [online, offline, maintenance], default: offline }
+        sortOrder: { type: integer, default: 0 }
+    Realm:
+      allOf:
+        - $ref: '#/components/schemas/RealmInput'
+        - type: object
+          required: [id, adminHost, adminPort, status, sortOrder]
+          properties:
+            id: { type: integer }
+    PublicRealm:
+      description: A realm as players see it; never includes adminHost/adminPort.
+      type: object
+      required: [id, name, host, port, region, status, sortOrder]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        host: { type: string }
+        port: { type: integer }
+        region: { type: string }
+        status: { type: string, enum: [online, offline, maintenance] }
+        sortOrder: { type: integer }
+    Jwks:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            required: [kty, kid, alg, use, n, e]
+            properties:
+              kty: { const: RSA }
+              kid: { type: string }
+              alg: { const: RS256 }
+              use: { const: sig }
+              n: { type: string }
+              e: { type: string }
+
+  responses:
+    Message:
+      description: Done
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [message]
+            properties:
+              message: { type: string }
+    CheckEmail:
+      description: Accepted. Identical for every email address.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [message]
+            properties:
+              message: { type: string }
+    Session:
+      description: New token pair
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Session' }
+    RealmList:
+      description: Realms ordered by sortOrder, then id
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [realms]
+            properties:
+              realms:
+                type: array
+                items: { $ref: '#/components/schemas/Realm' }
+    PublicRealmList:
+      description: Realms ordered by sortOrder, then id
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [realms]
+            properties:
+              realms:
+                type: array
+                items: { $ref: '#/components/schemas/PublicRealm' }
+    Realm:
+      description: Realm
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Realm' }
+    ValidationError:
+      description: '`validation_error`: malformed JSON, or the body/path failed validation'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ValidationErrorBody' }
+    Unauthorized:
+      description: '`unauthorized`: missing, malformed, expired, tampered or foreign access token'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: '`forbidden`: the token role may not call this, or a GM targeted a non-player account'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: '`not_found`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    AccountNotFound:
+      description: '`account_not_found`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RealmNotFound:
+      description: '`realm_not_found`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RealmNameTaken:
+      description: '`realm_name_taken`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: '`rate_limited`: per-IP limit for this endpoint reached'
+      headers:
+        Retry-After:
+          description: Seconds until the current window ends
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }

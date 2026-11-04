@@ -1,0 +1,19 @@
+{
+  "name": "chthonic-world",
+  "version-string": "0.1.0",
+  "builtin-baseline": "ed8445dd2a9ba44e0e3ace4e952b2e33130082d9",
+  "dependencies": [
+    { "name": "asio", "features": ["openssl"] },
+    "openssl",
+    "libmysql",
+    "jwt-cpp",
+    { "name": "cpp-httplib", "default-features": false, "features": ["openssl"] },
+    "entt",
+    "nlohmann-json",
+    "luajit",
+    "sol2",
+    "stb",
+    "recastnavigation",
+    "quill"
+  ]
+}

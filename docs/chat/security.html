@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security behaviour - Chthonic Chat Service</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="../world/index.html">World Server</a><a href="index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>Chat Service</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html" class="active">Security behaviour</a></li><li><a href="tests.html">Tests</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="security-behaviour">Security behaviour</h1>
+<h2 id="clients">Game clients</h2>
+<ul>
+<li><strong>TLS 1.2+</strong> only, as the world server; with the dev setup both present the same certificate.</li>
+<li><strong>Access tokens:</strong> the world server's verifier, shared (<a href="../world/security.html#token-verification">token verification</a>): RS256 by <code>kid</code> from the auth service's JWKS, <code>iss</code>, <code>aud</code>, <code>exp</code>. A bad token gets <code>Disconnect{invalid_token}</code>, an expired one <code>token_expired</code>. The role (<code>player</code>, <code>gm</code>, <code>admin</code>) comes from the token, never from the client.</li>
+<li><strong>Bound to a character:</strong> a connection speaks only as its account's online character, as the world server reported it. No character within <code>CHAT_BIND_TIMEOUT_MS</code>: <code>Disconnect{no_character}</code>. A second connection for the same character replaces the first (<code>logged_in_elsewhere</code>); the character leaving the world closes it (<code>no_character</code>).</li>
+<li><strong>Text:</strong> exactly the world server's rules and code (<code>sanitize_chat</code>): valid UTF-8, at most <code>CHAT_MAX_BYTES</code>, C0/DEL/C1 control characters stripped; an invalid or oversized message gets <code>ChatNotice{rejected}</code>. The rate limit (<code>CHAT_RATE_COUNT</code> per <code>CHAT_RATE_WINDOW_MS</code>, per sender) answers <code>rate_limited</code>; rejected messages count. Neither disconnects.</li>
+<li><strong>Frames:</strong> the world server's session limits (frame size, handshake deadline, idle timeout, message rate with disconnect on sustained excess, send-buffer cap).</li>
+<li><strong>Logging:</strong> tokens and chat text are never logged at info or above; at debug level only a message's byte length is.</li>
+</ul>
+<h2 id="link">World links</h2>
+<ul>
+<li><strong>Separate port</strong> (<code>CHAT_LINK_PORT</code>), meant for the private network; TLS like the client port.</li>
+<li><strong>Shared secret:</strong> the first message must be <code>LinkHello{version, secret}</code>, compared in constant time with <code>CHAT_LINK_SECRET</code>. Wrong secret: <code>Disconnect{invalid_token}</code> and a <code>world link refused: wrong secret</code> warning; wrong version: <code>protocol_mismatch</code>; anything else first: <code>unexpected_message</code>.</li>
+<li><strong>Trust:</strong> a linked world server is trusted with who is online where. Its characters go offline when the link drops.</li>
+</ul>
+<h2 id="mutes">Mutes</h2>
+<ul>
+<li><strong>Who:</strong> only a <code>gm</code> or <code>admin</code> token may mute or unmute; a player gets <code>ChatNotice{not_allowed}</code> (logged as <code>mute refused: not a GM</code>).</li>
+<li><strong>What:</strong> by character name (case-insensitive), online or not, for 1 to <code>CHAT_MUTE_MAX_MINUTES</code> minutes. The muted character gets <code>you_muted</code>; its whispers, channel and zone lines are dropped with <code>ChatNotice{muted, minutes left}</code>, and every linked world server drops its say, yell and emote the same way.</li>
+<li><strong>Stored:</strong> table <code>chat_mutes</code> in <code>chthonic_chat</code> (name, end time, the GM's account), loaded at startup and sent to each world server when its link connects; expired rows are deleted at startup and every minute. A database write that fails is logged (<code>mute store write failed</code>); the mute still applies until the next restart.</li>
+<li><strong>Audit:</strong> <code>muted</code> / <code>unmuted</code> log lines with the name, minutes and GM account.</li>
+</ul>
+<h2 id="ignore">Ignore</h2>
+<p>Per character, in memory, until it logs out (or the chat service restarts). Ignored senders aren't told.</p>
+</main>
+</div>
+</body>
+</html>

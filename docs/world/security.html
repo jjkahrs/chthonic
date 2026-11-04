@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security behaviour - Chthonic World Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html" class="active">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="security-behaviour">Security behaviour</h1>
+
+<h2 id="tls">TLS</h2>
+<ul>
+<li><strong>Protocol:</strong> TLS 1.2 or later only.</li>
+<li><strong>Production:</strong> set <code>TLS_CERT_FILE</code> and <code>TLS_KEY_FILE</code>.</li>
+<li><strong>Dev certificate:</strong> without them, the server generates a self-signed dev cert once and logs a warning (the same idea as auth's dev signing key). <code>TLS_DEV_CERT_DIR</code> is gitignored.</li>
+<li><strong>Bot verification:</strong> the bot checks the server certificate and host name against the file passed with <code>--ca</code> (<code>/certs/server.crt</code> in compose).</li>
+<li><strong>No downgrade:</strong> a client that never completes TLS is closed when the handshake deadline expires. Plain TCP never gets a game message.</li>
+</ul>
+<h2 id="token-verification">Token verification</h2>
+<p>The server follows the "Verifying access tokens from the World Server" section of the <a href="../auth/token-verification.html">Auth Server docs</a>:</p>
+<ul>
+<li><strong>Algorithm:</strong> <code>alg</code> must be <code>RS256</code>, so <code>none</code> and HS* are rejected. HS256 signed with the public key (key confusion) is rejected too.</li>
+<li><strong>Key selection:</strong><ul>
+<li>The key is chosen by the <code>kid</code> header from the cached JWKS.</li>
+<li>The JWKS is refreshed after 300 s.</li>
+<li>An unknown <code>kid</code> refetches the JWKS once, at most every <code>JWKS_MIN_REFETCH_SECONDS</code>, so random <code>kid</code>s can't hammer auth.</li>
+</ul>
+</li>
+<li><strong>Claims:</strong><ul>
+<li><code>iss</code> and <code>aud</code> must match the config.</li>
+<li><code>exp</code> is required, with <code>JWT_CLOCK_SKEW_SECONDS</code> of leeway.</li>
+<li><code>sub</code> must be a decimal account id.</li>
+<li><code>role</code> must be <code>player</code>, <code>gm</code> or <code>admin</code>.</li>
+</ul>
+</li>
+<li><strong>Auth unreachable:</strong> if the JWKS can't be fetched, the client gets <code>service_unavailable</code>.</li>
+<li><strong>Off the game thread:</strong> verification and the JWKS fetch run on their own thread, never on the game thread (which runs the tick and handles messages) or the net threads (TLS and socket I/O).</li>
+<li><strong>Logging:</strong> tokens are never logged, and neither are passwords. Chat text is never logged at info or above; at debug level only its byte length is.</li>
+</ul>
+<h2 id="ban-gap">Ban gap</h2>
+<ul>
+<li><strong>When the token is checked:</strong> only at the handshake. A session then lasts until disconnect.</li>
+<li><strong>Effect:</strong> a player banned in auth keeps playing until they disconnect. They can't log in again once their access token expires, at most 15 minutes after it was issued, because auth revokes the refresh tokens immediately.</li>
+<li><strong>Closing the gap:</strong> this needs a ban/revocation endpoint in auth that the world polls or subscribes to. Neither exists yet.</li>
+<li><strong>Role changes:</strong> a role change also only applies at the next login.</li>
+</ul>
+<h2 id="abuse-limits">Abuse limits</h2>
+<p>All of these are configurable; see the <a href="protocol.html#abuse-limits">protocol</a> for the exact rules.</p>
+<ul>
+<li><strong>Frames:</strong> maximum frame size, handshake deadline and idle timeout.</li>
+<li><strong>Messages:</strong> the per-connection message rate, with disconnect on sustained excess, and one character request in flight at a time.</li>
+<li><strong>Movement:</strong> bounds, speed and the ground (no flying), with <code>Correction</code>. Rejected moves are never replicated.</li>
+<li><strong>Chat:</strong> size limit, UTF-8 validation, control-character stripping and the 5 per 10 s rate limit, for say, yell and emote alike. A yell's reach is capped by <code>CHAT_YELL_RADIUS</code>; a character the chat service muted is dropped with a notice (<a href="#chat-link">Chat link</a>).</li>
+<li><strong>Client events:</strong> name, size and JSON-object checks, and 10 per second per character (not configurable; see <a href="#client-events">Client events</a>).</li>
+<li><strong>Connections:</strong> a connection limit and a send-buffer cap for clients that stop reading.</li>
+<li><strong>Malformed input:</strong> an unknown opcode, a bad length or a decode failure disconnects the client with a reason code.</li>
+</ul>
+<h2 id="chat-link">Chat link</h2>
+<p>The world server is the client end of the <a href="../chat/security.html#link">chat service's internal link</a> (<code>CHAT_LINK_HOST</code>):</p>
+<ul>
+<li><strong>TLS, verified:</strong> the chat service's certificate must chain to <code>CHAT_LINK_CA_FILE</code> (default: this server's own certificate, which the dev stack shares) and name <code>CHAT_LINK_HOST</code>.</li>
+<li><strong>Shared secret:</strong> <code>LinkHello</code> carries <code>CHAT_LINK_SECRET</code> (16+ characters), never logged. A wrong secret is refused with <code>Disconnect{invalid_token}</code>, logged as <code>chat link: refused by the chat service</code>, and retried with backoff.</li>
+<li><strong>What crosses it:</strong> account id, character id, name and map of each character in the world, and the mutes back. No chat text, no tokens.</li>
+<li><strong>Mutes:</strong> the chat service decides them (GM / admin role from their JWT); the world only applies them to say, yell and emote. A link (re)connect replaces the whole list.</li>
+<li><strong>Failure:</strong> the world runs as before without the link: proximity chat keeps working, mutes already received stay until they end.</li>
+</ul>
+<h2 id="admin-port">Admin port</h2>
+<p>The admin service asks each world server who is online and kicks sessions through its <a href="protocol.html#admin">admin port</a> (<code>WORLD_ADMIN_*</code>, <a href="configuration.html">configuration</a>):</p>
+<ul>
+<li><strong>Off unless configured:</strong> without <code>WORLD_ADMIN_SECRET</code> nothing listens, and the start logs <code>admin port off: WORLD_ADMIN_SECRET is not set</code>.</li>
+<li><strong>Internal only:</strong> it binds <code>WORLD_ADMIN_HOST</code>, <code>127.0.0.1</code> by default. The compose stack binds <code>0.0.0.0</code> inside the container and does not publish the port, so only containers on the compose network reach it. Never expose it publicly.</li>
+<li><strong>TLS:</strong> the server's own certificate and TLS context, as for game clients. The dev certificate names <code>localhost</code>, <code>world</code>, <code>chat</code> and <code>127.0.0.1</code>; the admin service trusts it as a CA file.</li>
+<li><strong>Shared secret:</strong> the first message must be <code>LinkHello</code> carrying <code>WORLD_ADMIN_SECRET</code> (16+ characters). It is compared in constant time (<code>CRYPTO_memcmp</code>, after a length check). A wrong secret is logged as <code>admin port refused: wrong secret</code> (session and remote address, never the secret) and the connection is closed with <code>Disconnect{invalid_token}</code>. Anything else before the hello: <code>Disconnect{unexpected_message}</code>.</li>
+<li><strong>Limits:</strong> at most 32 admin connections at once (more get <code>server_full</code>), and the game clients' frame size, handshake deadline, idle timeout and message rate.</li>
+<li><strong>Kicks:</strong> logged with the account, character, reason and admin address. A kicked character leaves the world exactly as on a duplicate login, so it is saved; the client gets <code>Disconnect{kicked}</code>. The reason text stays in the world's log.</li>
+<li><strong>Thread safety:</strong> the listener and the request handling run on the game thread with the tick, so the online list and kicks never race it. Only each connection's TLS and socket I/O run on a net thread.</li>
+</ul>
+<h2 id="client-events">Client events</h2>
+<p><code>ClientEvent</code> (<code>chthonic.world.send</code> on the client) is the only way a client talks to the server's Lua systems. The rules are in the <a href="protocol.html#client-events">protocol</a>.</p>
+<ul>
+<li><strong>Validation:</strong> the server re-checks every event: a name of 1–32 characters of <code>a-z0-9._</code>, at most 1 KB of JSON, and JSON that parses to an object. Anything else is a malformed frame: <code>Disconnect{malformed}</code>, logged as <code>client event rejected</code> with the session and byte count.</li>
+<li><strong>Rate limit:</strong> 10 per second per character. Excess events are dropped silently and counted; the count is logged as <code>client events dropped</code> <code>{char, count}</code> when the character leaves. The per-connection message rate applies too.</li>
+<li><strong>Handlers must validate <code>data</code>:</strong> only <code>entity</code> (the sender) is set by the server; <code>data</code> is whatever the client sent. The client asks, the server decides. A combat system, say, checks on the server that <code>target</code> is a number naming an NPC with <code>Health</code>, that the target and the attacker are alive, that the cooldown has passed and that the target is on the attacker's map within range. The damage is the server's own constant: the client never decides it. A refused attack only sends the attacker <code>combat.rejected</code> <code>{reason}</code>.</li>
+<li><strong>Locked movement:</strong> <code>chthonic.setMovable(e, false)</code> (a <code>MoveLock</code> on the character) makes the movement step refuse every <code>Move</code> from that player with a <code>Correction</code> back to where it stands. The sample uses it for dead players, so a modified client can't walk while dead. It is not saved: the sample's <code>combat.lua</code> kills a character that logged out dead again on login.</li>
+</ul>
+<h2 id="trust_proxy-test-only">TRUST_PROXY (test only)</h2>
+<ul>
+<li><strong>What it does:</strong> the test compose sets <code>TRUST_PROXY=true</code> on auth. Every bot sends its own <code>X-Forwarded-For</code> address, so auth's per-IP limits (register 5/h, login 20/min) apply per bot. That lets one harness register, verify and log in 500+ accounts.</li>
+<li><strong>Never in production:</strong> don't set it on an auth service that clients can reach without a trusted proxy in front of it. Anyone could then forge their IP and bypass the limits.</li>
+<li><strong>Auth's key in scenario 8:</strong> the test bot also mounts auth's key volume read-only and runs as root for that one scenario. It uses the key to mint an expired but correctly signed token. This is test-only too.</li>
+</ul>
+</main>
+</div>
+</body>
+</html>

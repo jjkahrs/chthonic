@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tests - Chthonic World Server</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
+<div class="layout">
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html" class="active">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<main>
+<h1 id="tests">Tests</h1>
+<p id="perf"><code>ctest --preset debug</code>, <code>release</code> and <code>linux-release</code> (the Docker build) run only the
+correctness tests. The performance tests carry <code>LABELS perf</code> and run with <code>ctest --preset perf</code> (Release) or
+<code>perf-linux</code>: <code>log_bench</code>, <code>aoi_bench</code>, <code>activation_bench</code>, <code>map_threads_bench</code> and
+<code>world_timing_bench</code>. A speed limit depends on what else the machine runs, so it never fails a build.
+<code>world_timing_bench</code> is <code>world_self_check --timing</code>: the self-check with its timing checks' speed limits on
+(replication idle tick, <code>chthonic.query</code>, the Lua bridge; Release only). Without <code>--timing</code> they print their numbers
+and check only behaviour.</p>
+<p id="sample-maps"><strong>Sample maps:</strong> the checks marked "with the sample maps" are compiled only when the CMake cache variable
+<code>CHTHONIC_SAMPLE_MAPS</code> (default <code>world/maps</code>) holds all seven sample maps (<code>start</code>, <code>cave</code>,
+<code>hills</code>, <code>plains</code>, <code>marsh</code>, <code>crypt</code>, <code>tilegrid</code>, each with its <code>map.json</code>); otherwise the
+self-check prints that it skipped them and <code>mapbake_cli</code> skips the hills navtile comparison. The repository does not ship them:
+<code>cmake --preset debug -DCHTHONIC_SAMPLE_MAPS=C:/path/to/maps</code>. Likewise the integration scenarios that need them
+(0, 16–20, 25, 30, 32, 41, 42) report <code>SKIP</code> when the world's mounted maps folder (<code>MAPS_DIR</code>) lacks them.</p>
+<ul>
+<li><strong>Self-check</strong> (<code>tests/self_check.cpp</code> + <code>tests/lua_checks.cpp</code>, ctest <code>world_self_check</code>): assert-style checks of the pure logic with an injected clock, so nothing sleeps (except the send fan-out check: <code>net::send_many</code> to five sessions on unconnected sockets encodes the message once and leaves exactly <code>proto::encode</code> of it in each one's send buffer, also through the lag simulator, whose timers it waits a few ms for). The Lua checks write their scripts to a temp folder and drive a <code>World</code> with captured sends, saves and log lines. A batching check moves 3 players and a script NPC in view of
+  2 still players and asserts each of the 5 gets exactly one <code>EntityMoves</code> with every other mover's move and never
+  its own, and that a lone player gets none (it fails if replication goes back to a message per mover). The codec checks
+  round-trip <code>EntityMoves</code> empty, with two entries and full (<code>kMaxEntries</code>, which must fit one frame), and reject a cut
+  entry, a count past the payload, bytes past the count and a NaN position. They cover the event bus (publish, subscribe, order, errors), <code>chthonic.publish/subscribe/unsubscribe</code> and the client sends: audiences, order, rejections and timing. They also cover state machines, from definitions to C++ / Lua parity, and Lua logging
+  (<code>chthonic.debug</code>, fields tables, their errors, <code>LOG_LEVEL</code>). Log lines are written by a background thread, so the checks call
+  <code>log::flush()</code> before reading what they captured.</li>
+<li><strong>AOI differential check</strong> (<code>self_check.cpp</code>, <code>checkAoiDifferential</code>): seeded random worlds (20 seeds &times; 400 ticks;
+  players and NPCs on 3 maps, moves within a cell and across cells, logins and logouts, NPC create / destroy, transfers before
+  and after the aoi pass, Lua-style moves after it, idle ticks) run through the old full recompute (kept in the test) and through
+  <code>aoi_system</code>, which skips players with no touched cell near. After every tick each session's messages (encoded, in order),
+  every <code>Visible.ids</code> / <code>Visible.entered</code> and every NPC's <code>Viewers</code> must be identical; it prints how often each event
+  kind ran and fails if any ran 100 times or fewer. Leaving out any touch (for example the one for a move within a cell) fails it.</li>
+<li><strong>Instance checks</strong> (<code>lua_checks.cpp</code>, <code>checkInstanceManifests</code>, <code>checkInstances</code>, <code>checkInstanceKeyErrors</code>;
+  <a href="instances.html">Instances</a>): the <code>map.json</code> fields and every refusal (field and file named), the exit checks in
+  <code>Maps::load</code>; no copy at startup; same key one copy, another key or none a new one, each with its own Bat and Lua
+  (<code>init</code> / <code>shutdown</code>, <code>chthonic.map.instance()</code>); <code>instance =</code> skipping the hook; a full copy refused (<code>chthonic.transfer</code>
+  false, <code>instance.full</code>, no <code>MapChange</code>) and the C++ transfer too; relog into a live copy, a full one, a gone one and an old row;
+  the empty timer with the injected clock (cancelled by re-entry, firing at 10 s, <code>emptyTimeoutSec</code> 0 at the next serial point); the Lua
+  refusals (<code>chthonic.world.post</code> to an instance map, <code>chthonic.create</code> onto one, bad keys); 600 copies made and destroyed in a row (their
+  entity ids recycled); <code>instanceKey</code> errors disabling only that system. <code>world_self_check --instance-bench</code> prints the median
+  cost to make and destroy a copy with the sample <code>lua/</code>.</li>
+<li><strong>Layer checks</strong> (<code>lua_checks.cpp</code>, <code>checkLayerManifests</code>, <code>checkLayers</code>, <code>checkLayerOverflow</code>;
+  <a href="maps.html#layers">Maps, Layers</a>), on a test map with <code>layerCap</code> 2 and <code>emptyTimeoutSec</code> 10:
+  <code>layerCap</code> parsed and every refusal (below 1, not an integer, on an instance map with the file named; <code>emptyTimeoutSec</code>
+  on a world map without it); the base layer from startup; below the cap no new layer, at the cap a new one (logged, its own
+  <code>init</code> and Bat), arrivals (logins and transfers) filling the fullest layer with room, not the emptier base; layers sharing
+  no players or NPCs, <code>/say</code> and yell staying in the layer while every layer reports the same map (zone chat); relog into a
+  live layer with room, a full one, a gone one and an instance_id 0 row (at the saved position); <code>layerFor</code> picking a live
+  layer, ignored for a full or a gone one, and asked with <code>e</code> nil at a login; <code>chthonic.transfer</code> <code>layer =</code> into a layer with
+  room, refused into a full or gone one (<code>false</code>, <code>instance.full</code> <code>{layer}</code>, no <code>MapChange</code>), to another layer
+  of the same map, and a transfer within the map staying in the layer; <code>chthonic.map.instance()</code> in a layer; an empty extra layer
+  destroyed after 10 s (shutdown run, logged), the empty base never; with entity ids low the player overfilling the base, logged,
+  nobody refused; <code>layerFor</code> errors and bad results disabling only that system. Maps without <code>layerCap</code> are covered by
+  every other check, unchanged.</li>
+<li><strong>Parallel differential check</strong> (<code>self_check.cpp</code>, <code>checkParallelDifferential</code>;
+  <a href="maps.html#threading">Threading</a>): seeded random worlds (20 seeds &times; 400 ticks) on 4 maps, each run in two
+  <code>World</code>s, one with <code>MAP_THREADS=1</code> and one with 4, driven alike: logins (some next to a map's portal) and logouts,
+  moves (a few speedhacks, so <code>Correction</code>s), says and yells, client events, C++ transfers and NPC creates / destroys between
+  ticks, spawn-file NPCs that respawn, and a Lua system on its own seeded generator moving, creating (on its map and on others),
+  destroying and transferring NPCs and players, setting an aoi component, posting to a map and to <code>"all"</code> (answered with a
+  <code>chthonic.broadcast</code>), sending client events and changing a game machine, with <code>MAX_NPCS</code> 150 so the shares run out now
+  and then. Map 5 is an <a href="instances.html">instance map</a> (<code>maxPlayers</code> 3, <code>emptyTimeoutSec</code> 1, a portal into it on
+  every world map): the Lua system's <code>instanceKey</code> picks one of 3 keys or none, its <code>chthonic.transfer</code> passes <code>instance =</code>, the
+  C++ transfers key copies too, logins come back saved in a live or long-gone copy, and <code>instance.full</code> is answered with a
+  client event, so copies are made, filled, refused, rejoined and destroyed (hundreds of each). After every tick each session's
+  messages (encoded, in order), the saves and the live contexts (map, instanceId, key, players, NPCs) must be byte-identical; it prints how often
+  each kind ran and fails if any ran too rarely, or if the Lua system got disabled. <code>world_self_check --parallel-stress N</code>
+  runs it over N seeds (the long race run). Two mutations were checked to fail it: entity ids from one pool behind a lock (a
+  different session message at tick 17) and <code>MAX_NPCS</code> counted live across contexts (tick 136). <code>checkConfig</code> refuses
+  <code>MAP_THREADS</code> 0, -1, -4, abc, 1.5, " 4" and 257.</li>
+<li><strong>Net thread handoff</strong> (<code>self_check.cpp</code>, <code>checkNetHandoff</code>): 8 real 127.0.0.1 TLS sessions accepted
+  round-robin onto a 4-thread <code>net::NetThreads</code>, with the check's own thread as the game thread and the sessions' callbacks posting to
+  it as <code>GameServer</code>'s do. Every client writes 100 frames at once: each session's messages must reach the game thread in send order,
+  and no callback may run on the game thread. One <code>net::send_many</code> from the game thread to all 8 must encode once
+  (<code>framesEncoded</code> +1) and every client must receive exactly <code>proto::encode</code> of it. Then a client closes: the game thread
+  keeps sending while the close races it, and after <code>on_closed</code> arrives a <code>send</code>, <code>send_many</code> and
+  <code>disconnect</code> to that session must queue nothing (checked on its own net thread), and a queued send holding the last reference
+  must run and then free the session. It prints one <code>net threads:</code> line. <code>checkConfig</code> refuses <code>NET_THREADS</code> 0, 65 and abc.</li>
+<li><strong>Parallel cost</strong> (ctest <code>map_threads_bench</code>, <code>world_self_check --map-threads-bench</code>): p50 and p95
+  <code>World::tick</code> ms over 300 ticks (after 50 to warm up) on the injected clock, the sample <code>lua/</code> running, 4 maps of 4&times;4
+  tiles, each with 100 players moving 8 m/s and 100 patrolling spawn-file Guards, with <code>MAP_THREADS=1</code> and 4. Prints the
+  hardware thread count; fails if the 4-thread p95 is above 40% of the 1-thread p95. With fewer than 4 hardware threads, or in a
+  Debug build (MSVC's checked STL and debug heap take process-wide locks: 4 threads measured at 140-230% of 1), it prints
+  that the threshold was skipped instead; Release builds check it (<code>ctest --preset perf</code> or <code>perf-linux</code>).</li>
+<li><strong>AOI cost</strong> (ctest <code>aoi_bench</code>, <code>world_self_check --aoi-bench</code>): ns per <code>aoi_system</code> call with 500 and
+  2000 players (plus a fifth as many NPCs) on a 2 km map (an 8 x 8 tile area; maps go to 64 x 64, 16 km), all idle, 10% and 100% moving a short step each tick. Printed, not checked.</li>
+<li><strong>Tile activation</strong> (<code>checkTileActivation</code> in <code>lua_checks.cpp</code>, the sample <code>lua/</code> plus a probe system logging what
+  <code>chthonic.query("Npc")</code> returns): no spawn-file NPC however long a world runs with no player; a login spawns its tile's and
+  the neighbours' NPCs at once and no farther; a transfer away puts them to sleep without despawning them (absent from
+  <code>chthonic.query</code>, the Guard's position and patrol state frozen) and loads the destination; a destroyed sleeping NPC respawns
+  exactly <code>respawnSec</code> later, asleep; coming back wakes the same Guard, which walks on to the point it was heading for;
+  nothing spawns twice; <code>chthonic.create</code> NPCs sleep, and wake when moved onto a near tile; a logout puts the tiles to sleep;
+  <code>ACTIVATION_TILES</code> 2 loads tiles two off. <code>checkConfig</code> refuses <code>ACTIVATION_TILES</code> 0, -1, abc, 1.5 and 33. Checks written for
+  always-on spawns put a watcher player on every spawn spot first (<code>watch_spawns</code>).</li>
+<li><strong>Map contexts</strong> (<code>lua_checks.cpp</code>; <a href="maps.html#map-contexts">Map contexts</a>): <code>checkMapContexts</code> on three maps: the realm's and
+  <code>START_MAP</code>'s contexts start with the scripts and the others on first use, each with a <code>map context started</code> debug line;
+  the game machine enters once (in the realm) however many map contexts load <code>fsms/</code>; each map runs its own copy of a system;
+  each map's NPCs are in its own registry; 1,000 NPCs created and destroyed in each of the three contexts, twice, have 3,000
+  different ids, each valid in exactly one context; the Spawns a player gets carry them, each once; an NPC moved to another map
+  keeps its id. <code>checkWorldPost</code>: <code>chthonic.world.post</code> to a map id, <code>"realm"</code> and <code>"all"</code> is delivered on the next tick
+  only, in post order per bus, as <code>{from = 1, data}</code> (a C++ subscriber on the realm's bus, a Lua one on each map's); a game
+  machine's callback posting from the realm gives <code>from = "realm"</code>; a bad target (9, 1.5, a string, nil), a bad event name and
+  bad data (infinity, a cycle) raise. The checks that read an entity on another map use that map's registry
+  (<code>World::registry(map)</code>, <code>registry_of(e)</code>) and bus; game machines are driven through <code>World::realm_fsm()</code>.</li>
+<li><strong>Activation cost</strong> (ctest <code>activation_bench</code>, <code>world_self_check --activation-bench</code>): the median <code>World::tick</code> over 200
+  ticks (after 50 to warm up) on the injected clock, the sample <code>lua/</code> running, 100 idle players on one tile of a 32&times;32
+  tile map, (a) alone and (b) with 10,000 patrolling spawn-file Guards on 100 tiles 9 or more tiles away. Before (b) a
+  scout logs in on each Guard tile and out again, so the 10,000 exist and sleep. Fails if (b) is more than 110% of (a).
+  Before tile activation (b) was about 270 times (a) (26 ms against 0.1 ms, Release).</li>
+<li><strong>Logging</strong> (ctest <code>log_bench</code>, <code>log_pressure</code> and <code>log_flush</code>): <code>log_bench</code> (perf; <code>world_self_check --log-bench</code>, stdout to the null device)
+  prints the caller-side ns per line of <code>log::info</code> and of the old synchronous write (printed only: one timing sample is too noisy to fail a build on).
+  <code>log_pressure</code> (<code>world_self_check --log-pressure</code>) checks that 4 threads &times; 100,000 lines all reach the sink. <code>log_flush</code> checks that the line logged right before a SIGSEGV on the main thread
+  or another thread, an <code>abort()</code>, and a SIGKILL while the writer is busy (a <code>warn</code> line;
+  <code>world_self_check --log-crash segv|segv-thread|abort|kill</code>) and before <code>chthonic_world</code>'s fatal startup error (a missing <code>MAP_ROOT</code>)
+  is on stdout, and that the logger leaves SIGTERM to the app's own handler (<code>--log-crash sigterm</code>).</li>
+<li><strong>Client events</strong> (<code>self_check.cpp</code> + <code>lua_checks.cpp</code>): the <code>ClientEvent</code> codec round trip, its exact
+  bytes and opcode name; <code>client_event_data</code> refusing a bad name, more than 1 KB, text that isn't JSON and JSON that isn't
+  an object. With a <code>World</code> (<code>checkClientEventsIn</code>): <code>client.&lt;name&gt;</code> delivered to a subscriber with the sender's
+  <code>entity</code> and <code>data</code>, the 10 a second limit, the dropped count and its log line at the despawn.
+  <code>checkMovableAndMapSpawn</code>: <code>chthonic.setMovable</code> refusing moves with <code>Correction</code> and its errors, and
+  <code>chthonic.map.spawn</code>; the <code>Spawn</code> built-in's <code>pos</code> / <code>heading</code> in the spawn checks.</li>
+<li><strong>Game data folders</strong> (<code>checkDefinitionsApi</code>): <code>chthonic.definitions</code> reading every <code>.lua</code> file of a folder
+  recursively, sorted, with their paths, fresh copies on every call, a missing folder as none, refusing folders that leave
+  <code>LUA_ROOT</code> (<code>..</code>, absolute, <code>\</code>, <code>:</code>, empty parts) and files that fail or return more than one table.</li>
+<li><strong>Character creation</strong> (<code>self_check.cpp</code> + <code>checkCharacterCreation</code> in <code>lua_checks.cpp</code>): the
+  <code>CharCreate</code> / <code>CharInfo</code> options round trip and byte layout, a key twice or a cut option is malformed, the C++ limits
+  (8 entries, keys of 1–16 <code>[a-z_]</code>, values of up to 32 printable ASCII); without a <code>validateCharacter</code> only empty options
+  pass; with hooks every one must return <code>true</code>, an error refuses and disables its system; <code>chthonic.get(e, "Character").options</code>.</li>
+<li><strong>Maps</strong> (in <code>lua_checks.cpp</code>): tile math at the edges, every manifest and <code>Maps::load</code> error, bounds <code>Correction</code>,
+  per-map AOI, <code>World::transfer</code> message order, map save/load fallbacks, and <code>chthonic.transfer</code> / <code>Transform.map</code>.</li>
+<li><strong>Areas</strong> (in <code>lua_checks.cpp</code>): rect, concave polygon, <code>y</code> range, priority and parent flag inheritance; every
+  <code>areas.json</code> and portal load error; the sample maps loading. With the sample maps and <code>lua/</code>: <code>area.enter</code> on login
+  (and <code>events.lua</code>'s log line), <code>area.leave</code> then <code>area.enter</code> exactly once on crossing a border, and a walk into the
+  cave portal (map, position, heading, events, <code>MapChange</code> before <code>Despawn</code> before <code>Spawn</code> in that tick, no
+  <code>EntityMoves</code> entry leaking to the old neighbours, the save on map 2). <code>chthonic.map.area</code> / <code>areaAt</code> for players, NPCs and
+  points, and their errors.</li>
+<li><strong>NPC spawns</strong> (in <code>lua_checks.cpp</code>): <code>parse_spawns</code> with every field, default and rejection; every spawn file
+  load error (file name, tile not on the map, <code>pos</code> outside the tile, duplicate id across a map's files); respawn on the
+  injected clock (not back at 29.95 s, back at 30 s at its <code>pos</code>, <code>-1</code> never), <code>MAX_NPCS</code> deferring with one warning;
+  the <code>Spawn</code> built-in from Lua (<code>query</code>, fields, read-only). With the sample maps and <code>lua/</code>: the Guard and the Bat
+  from their files, the Guard visiting its 4 path points at 3 m/s, and the test hook's destroy and 5 s respawn.</li>
+<li><strong>Ground</strong> (<code>self_check.cpp</code> movement + <code>lua_checks.cpp</code>): <code>validate_move</code> lifting under-ground moves, <code>in_air</code> for
+  rising or hovering past <code>MOVE_MAX_AIR</code> (spending no budget), falling from 50 m; the two env vars. A generated
+  ramp map loaded from <code>.r16</code> files: <code>Maps::ground</code> at samples, between them, on tile edges, a tile without a file,
+  off the map, and equal to <code>map::ground</code>; a bad heights file. With a <code>World</code> on it: entering under the ground,
+  moves (lifted, <code>Correction</code>, falling), an NPC created and a spawn file at y = 100 standing on the ground, a transfer
+  landing on it, and <code>chthonic.map.ground</code>. With the sample maps: hills' PNG heightmaps load.</li>
+<li><strong>Navmesh</strong> (<code>lua_checks.cpp</code> + ctest <code>mapbake_cli</code>): an in-memory bake of a 2-tile ramp with a 22 m block whose
+  sides are 70 degree slopes: <code>seam_errors</code> on a torn edge, a path from tile 0_0 to tile 1_0 that goes round the block,
+  no path to a point off the mesh, <code>on_mesh</code> false on the 70 degree slope and 20 m up, true on the ramp, the seam and
+  5 m up. Navtiles with a bad magic, navtile or Detour version, another tile's blob, or truncated: each a load error.
+  Moves: onto the slope <code>Correction</code>, along the ramp accepted, <code>MOVE_NAV_CHECK=0</code> accepted, a map without navtiles
+  as in Ground; <code>validate_move</code>'s <code>off_mesh</code> spends no budget. <code>chthonic.map.path</code> from Lua (points, ends, the detour,
+  <code>nil</code> cases, errors). With the sample maps: hills on the mesh on a 32 degree slope (the client's 40 degree limit, not
+  Recast's ledge filter's ~27) and off it on the mesa wall, and the Sentry walking round the mesa on the ground.
+  <code>mapbake_cli</code> runs the tool: a torn seam and a spawn outside its tile exit 1 with nothing baked, and (with the sample maps)
+  hills' stored navtiles equal a fresh bake.</li>
+<li><strong>Map objects</strong> (<code>lua_checks.cpp</code> + <code>self_check.cpp</code> + ctest <code>mapbake_cli</code>): <code>parse_objects</code> on every field and
+  each kind of bad entry (skipped, the rest kept), a repeated id and bad files; <code>parse_interactables</code> on every field, its
+  defaults and each error, data more than 31 deep included; <code>footprint_distance</code> and <code>footprint</code> for boxes (turned by
+  yaw) and cylinders. <code>Maps::load</code>: interactables by map and id, and each refusal (an id twice on a map, a bad file name,
+  a tile not on the map, bad JSON, a bad entry). <code>Interact</code>: in range on the player's map publishes the event with
+  <code>{entity, map, object, data}</code> (data nil when absent); another map's id, an unknown id and out of range publish nothing
+  and log <code>interact rejected</code> at debug. An in-memory bake with a box wall, a cylinder interactable, a visual and a turned
+  box over the tile seam: the blocking ones off the mesh (both tiles for the seam one), the visual walkable, a path round
+  the wall, a move into it corrected. With the sample maps: the hills' obstacle crates off the mesh and its visual crate
+  on it, the Test Shrine loaded, the Sentry walking round the crate on its route. The codec round-trips <code>Interact</code> (version 5).
+  <code>mapbake_cli</code>: an objects file with an unknown type and a blocking object without a shape exits 1 with both errors.</li>
+<li><strong>Integration</strong> (<code>tests/integration.sh</code>): drives <code>chthonic_bot</code> scenarios against the compose stack. Scenario 10a
+  (<code>persist</code>) also checks that a new character enters map 1 and keeps its map across a relog.<ul>
+<li>The bots register, verify through Mailpit and log in with real auth tokens.</li>
+<li>Scenarios 10–13 use <code>docker compose restart/stop/start</code> on <code>world</code> and <code>mysql</code>; 34 and 37 on <code>chat</code>.</li>
+<li>Scenarios 29–38 cover proximity chat (29 <code>yell</code>: say in view only, yell past the view radius but not past <code>CHAT_YELL_RADIUS</code>, emote) and the <a href="../chat/tests.html">chat service</a> (whispers, channels, zone, ignore, GM mutes across a chat restart, text rules, refusals, the service down and back).</li>
+<li>Scenarios 39–40 cover the <a href="protocol.html#admin">admin port</a> (<code>WORLD_ADMIN_SECRET</code> in <code>.env</code>; the bot reads it from its environment). 39 (<code>admin</code>): a wrong secret gets <code>Disconnect{invalid_token}</code> and a request before the hello <code>unexpected_message</code>; with the right one the online list has a bot in the world (account, character, name, map, session, connect time) and a lobby bot with no character; a kick by character gives <code>kicked 1</code>, the bot gets <code>Disconnect{kicked}</code> and drops off the list, a second kick gives <code>kicked 0</code>, a kick by account reaches the lobby bot; the kicked character then enters at the position it walked to (saved). 40 (<code>admin-off</code>) recreates <code>world</code> with an empty <code>WORLD_ADMIN_SECRET</code>: the start logs <code>admin port off</code>, nothing listens on 7780 and a bot still enters the world; then <code>world</code> is recreated with the secret again. <code>tests/integration.sh --admin</code> runs only these two.</li>
+<li>Scenario 14 uses the sample <code>systems/events.lua</code>: <code>sendTo</code> reaches only its target, <code>sendNearby</code> only bots in view, and <code>broadcast</code> every bot.</li>
+<li>Scenario 15 (<code>fsm</code>) uses the sample <code>locomotion</code> machine. On entering, a bot gets exactly one <code>fsm.state</code> (<code>nil-&gt;idle</code>), because the denied <code>idle-&gt;idle</code> sends nothing. Walking, then standing still, gives <code>idle-&gt;moving</code> and then <code>moving-&gt;idle</code>. A bot in view gets none of them.</li>
+<li>Scenario 16 (<code>npcs</code>) uses the sample <code>systems/npcs.lua</code>, <code>npcs/guard.lua</code> and the Guard's spawn file. A bot entering at the spawn point gets <code>Spawn</code> for the Guard (<code>kind</code> npc, <code>template</code> <code>Guard</code>), its <code>Health</code> from the definition (<code>current</code> 50, <code>max</code> 50) and <code>EntityMoves</code> entries at changing positions. Walking 200 m away gives <code>Despawn</code> and then nothing about it; walking back gives <code>Spawn</code> and the <code>Health</code> again.</li>
+<li>Scenario 17 (<code>portal</code>) uses the sample <code>areas.json</code> files. Bot A walks from the spawn point into <code>cave_mouth</code>.
+  It gets <code>MapChange{2}</code> at the portal destination before any <code>Despawn</code>/<code>Spawn</code>, then sees the Bat and loses bot B,
+  who gets A's <code>Despawn</code>. After a relog A is still on map 2.</li>
+<li>Scenario 18 (<code>respawn</code>) uses the sample <code>systems/test_hooks.lua</code>. Bot A sees the Guard; bot B enters as
+  <code>Respawntest...</code>, and A gets the Guard's <code>Despawn</code>, then 4.5–6.5 s later a <code>Spawn</code> for a new Guard (new id, template
+  <code>Guard</code>) at its spawn point.</li>
+<li>Scenario 41 (<code>instances</code>) uses the sample crypt (<code>maps/crypt</code>: map 6, an <a href="instances.html">instance map</a>,
+  <code>maxPlayers</code> 2, <code>emptyTimeoutSec</code> 5, a Bat, exit on Start at (1030, 0, 1060)), Start's <code>crypt_gate</code> portal into it and the sample
+  <code>systems/test_hooks.lua</code>'s <code>instanceKey</code>, which returns the key a bot sent in <code>client.test.instance_key</code>. Bots A and B (key x) and
+  C (key y) walk into the gate: all get <code>MapChange{6}</code>; A and B see each other and the same Bat, C neither of them and another Bat. D
+  (key x) gets no <code>MapChange</code> and <code>test.instance_full</code> <code>{map 6, key x}</code>. The admin port's instance list (when
+  <code>WORLD_ADMIN_SECRET</code> is set) has Start's context and both copies (x: 2 players, 1 NPC; y: 1). A relogs: back in its copy (map 6,
+  its position, B in view). Everyone leaves; 7 s later neither copy is listed and A relogs at the crypt's exit on map 1.
+  Scenario 42 (<code>instance-restart</code>, <code>instance-restart-verify</code>): a bot logs out inside a copy (saved with its instance id),
+  the script restarts <code>world</code>, and the character enters at the crypt's exit: copies are memory-only.
+  <code>tests/integration.sh --instances</code> runs only 17, 41 and 42 (export <code>MAP_THREADS</code> to run them at that setting).</li>
+<li>Scenario 43 (<code>layers</code>, <a href="maps.html#layers">Layers</a>): the script recreates <code>world</code> with a copy of
+  the maps folder (<code>MAPS_DIR</code>) whose Start has <code>"layerCap": 2</code> (<code>tests/stack_override.sh</code>; the repo's maps are not changed). Bots A
+  and B enter Start's base layer and see each other; C enters, every layer being full, a new layer: it sees neither A nor B and
+  neither sees it. The admin port's instance list (when <code>WORLD_ADMIN_SECRET</code> is set) shows map 1's base with 2 players and the
+  new layer with 1, and the world logged <code>layer created</code>. The script then recreates <code>world</code> with the default maps.
+  <code>tests/integration.sh --layers</code> runs only 43.</li>
+<li>Scenario 0 runs <code>chthonic_mapbake</code> in the image on the mounted hills (into <code>/tmp</code>; the maps are read-only) and logs
+  the fresh and stored navtiles' checksums.</li>
+<li>Scenario 19 (<code>terrain</code>) reads <code>maps/hills</code> itself (<code>--map-root</code>, the maps mounted into the bot). Bots A and B take
+  <code>hills_gate</code> to map 3 and land on the ground. A walks 40 m down the slope (9 m, at most 36.5 degrees, under the
+  navmesh's 40) at the ground's height with no <code>Correction</code>, and B's <code>EntityMoves</code> entries for A are within 5 cm of the
+  ground. A rising 20 m then 30 m above the ground gets <code>Correction</code> back to its last position.</li>
+<li>Scenario 20 (<code>navmesh</code>) takes bot A to the hills: walking at ground height to the mesa's south foot gets no
+  <code>Correction</code>; walking on up its wall does. Over 30 s, the Sentry's <code>EntityMoves</code> entries pass the mesa's x range, all on
+  the ground and at most 0.5 m into its walls' foot (a navmesh corner may graze it).</li>
+<li>Scenario 21 (<code>client-events</code>) uses the sample <code>systems/test_hooks.lua</code>, which answers every <code>client.test.echo</code>
+  with <code>test.echo</code> <code>{n, entity}</code>: a <code>ClientEvent</code> comes back with the sender's entity and its <code>n</code>. A name with
+  capitals, a 33-character name, a payload over 1 KB, a JSON array and text that isn't JSON each get <code>Disconnect{malformed}</code>.</li>
+<li>Scenario 22 (<code>client-event-rate</code>): 30 events at once give only the first 10 echoes, and a second later events get
+  through again. The script then checks the world's log for <code>"client events dropped"</code> with <code>count</code> 20.</li>
+<li>Scenario 25 (<code>objects</code>) uses the hills' map object fixtures and the sample <code>systems/test_hooks.lua</code>, which answers
+  <code>test.shrine</code> with a <code>ServerEvent</code> carrying the payload. <code>Interact{1}</code> on map 1, at the hills' portal arrival (11 m from
+  the shrine's edge) and <code>Interact{999}</code> get nothing; walked to 1.9 m from it, <code>Interact{1}</code> gets the answer with
+  <code>{entity, map 3, object 1, msg hello}</code>; walking into the obstacle crate gets a <code>Correction</code> outside it.</li>
+<li>Logs go to <code>build/integration-&lt;run&gt;/</code>.</li>
+</ul>
+</li>
+<li id="tsan"><strong>ThreadSanitizer</strong> (<code>docker/tsan.override.yml</code>, testing only): the Dockerfile's <code>tsan</code> stage builds
+  <code>chthonic_world</code> and <code>world_self_check</code> with <code>-fsanitize=thread</code> as <code>chthonic-world:tsan</code>; the default image is unchanged.
+  TSan needs a fixed address layout, so the image starts under <code>setarch -R</code> and the override runs it with <code>seccomp:unconfined</code>.
+  <code>docker compose -f docker-compose.yml -f docker/tsan.override.yml up -d --build world</code> runs it; <code>COMPOSE_FILE</code> set to both files
+  (<code>;</code>-separated on Windows) makes <code>tests/integration.sh</code> and <code>tests/load.sh</code> use it. Reports go to files in the
+  <code>tsan-reports</code> volume, kept when the tests recreate <code>world</code>:
+  <code>docker compose run --rm --no-deps --entrypoint sh world -c 'cat /app/tsan/*' | grep -c "WARNING: ThreadSanitizer"</code> must be 0.
+  The self-check needs the source tree, so it runs in the build stage: <code>docker build --target build-tsan -t chthonic-world:tsan-build .</code>, then
+  <code>docker run --rm --security-opt seccomp=unconfined -w /src chthonic-world:tsan-build setarch x86_64 -R ./build/linux-release/world_self_check</code>. Without the override,
+  <code>docker compose up -d --force-recreate world</code> goes back to the default image.</li>
+<li><strong>Load</strong> (<code>tests/load.sh</code>):<ul>
+<li><strong>Setup:</strong> recreates <code>world</code> (with the shell's <code>MAP_THREADS</code>, default 1, <code>NET_THREADS</code>, default 4, and <code>MAX_CONNECTIONS</code>, default
+  <code>COUNT</code> + 100) so its totals cover only the test. It then runs <code>COUNT</code> bots in one process (8 io threads, 50 new connections per second) for <code>DURATION</code> s.</li>
+<li><strong>Across maps:</strong> <code>MAPS=1,2,4,5</code> passes <code>--maps</code> to the bot: bot <em>i</em> heads for the <em>i</em>-th listed map (round
+  robin, so <code>COUNT</code> spreads evenly). It enters on its saved map (<code>START_MAP</code> for a new character), walks at 9 m/s to the middle of
+  the next portal on the shortest portal route there (read from <code>--map-root</code>'s <code>map.json</code> and <code>areas.json</code> files),
+  and once on its map wanders within the map's bounds, turning back 5 m before any portal area. The sample maps give
+  4 flat maps for it: Start (1), Cave (2) and the test maps Plains (4) and Marsh (5), reached through Start's <code>plains_gate</code> and
+  <code>marsh_gate</code>, about 320 m and 420 m west of the spawn point (Hills, 3, has terrain and a navmesh a wanderer would stray
+  off). The gates are far from the spawn point, and at different distances, because a map's context starts on its first use and
+  its Lua load takes one tick about 30 ms: gates next to the spawn would start every context in the login ramp's first 10 s window. The summary's <code>on_target_map</code> counts the
+  bots that got there; every one must. Example: <code>COUNT=400 MAPS=1,2,4,5 MAP_THREADS=4 bash tests/load.sh</code>.</li>
+<li><strong>Across instance copies:</strong> an <a href="instances.html">instance map</a> in <code>MAPS</code> (the crypt, 6) spreads its bots over copies:
+  every <code>INSTANCE_SIZE</code> of them (default the map's <code>maxPlayers</code>: 2) send the same instance key (the sample
+  <code>test_hooks.lua</code>'s <code>client.test.instance_key</code>) before walking to Start's <code>crypt_gate</code>, so each group gets its own copy; the
+  summary's <code>instance_keys</code> counts the copies. Example: <code>COUNT=200 MAPS=1,4,5,6 MAP_THREADS=4 bash tests/load.sh</code> (25 copies).</li>
+<li id="load"><strong>Layers:</strong> <code>LAYER_CAP=500</code> gives <code>START_MAP</code> <code>"layerCap": 500</code> for this run only
+  (<a href="maps.html#layers">Layers</a>): the world and the bot mount a copy of the maps folder with the field added
+  (<code>tests/stack_override.sh</code>, a compose override in <code>build/stack-override.yml</code>); the repo's maps are not changed. The result
+  shows the peak number of live layers per layered map (from the <code>layer created</code> / <code>layer destroyed</code> lines). Example:
+  <code>MAP_THREADS=4 COUNT=2000 LAYER_CAP=500 bash tests/load.sh</code> (4 layers; with <code>MAP_THREADS=1</code> the layers update one
+  after another and the ticks run over, <a href="maps.html#layers">Layers</a>). Afterwards the script recreates <code>world</code> with the default maps.</li>
+<li id="load-map-dir"><strong>Other maps:</strong> <code>MAP_DIR=&lt;maps folder&gt; START_MAP=&lt;id&gt;</code> mounts that folder (absolute, or
+  <code>./</code> / <code>../</code> relative to <code>world</code>) for the world and the bot instead of <code>MAPS_DIR</code>,
+  with that start map, for this run only (the same override); <code>ZONE=&lt;metres&gt;</code> is the wanderers' square edge
+  (<code>chthonic_bot --zone</code>, default 2048), and <code>TERRAIN=&lt;map folder&gt;</code> makes them walk at that map's ground height
+  (<code>chthonic_bot --terrain</code>), as a client does on relief, e.g. on a generated big map:
+  <code>MAP_DIR=/path/to/bench/maps START_MAP=216 ZONE=4096 TERRAIN=bench16 bash tests/load.sh</code>.</li>
+<li><strong>Pass criteria:</strong><ul>
+<li>Bot summary PASS: every bot entered the world (and, with <code>MAPS</code>, reached its map), with no errors, no unexpected
+  disconnects and no <code>Correction</code> for honest movers. Without <code>MAPS</code> a wanderer that walks into the sample portal
+  stops on the other map (<code>map_changes_recv</code>); the corrections for its moves still in flight are not counted.</li>
+<li>Every 10 s window's tick p99 is under 25 ms, and so is the run total.</li>
+<li>Zero failed save attempts.</li>
+<li>Enter p99 under 500 ms: each bot times connect &rarr; <code>EnterWorldOk</code> (login, character list, create on a first run, enter);
+  the summary has <code>enter_ms_p50</code> and <code>enter_ms_p99</code>. The result also shows the saves lost on the graceful stop.
+  Known issue: enter p99 is bimodal across runs (41 ms to 6 s), with or without layers; the cause is in the login path, not the
+  tick, and has not been profiled.</li>
+</ul>
+</li>
+<li><strong>Net busy (information only):</strong> the result's <code>net busy % worst window</code> line has each net thread's highest
+  <code>busy_pct</code> over the 10 s windows, and <code>net busy % run total</code> the <code>net stats total</code> line's
+  (<a href="operations.html#net-stats">Operations</a>).</li>
+</ul>
+</li>
+</ul>
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,58 @@
+# Local stack: auth API + MySQL + Mailpit. Requires .env (cp .env.example .env).
+name: chthonic-auth
+
+services:
+  auth:
+    build: .
+    env_file: .env
+    environment:
+      # Inside the compose network these replace the host-side values from .env.
+      PORT: 3000
+      DB_HOST: mysql
+      DB_PORT: 3306
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      KEYS_DIR: /app/keys
+    ports:
+      - "3000:3000"
+    volumes:
+      - auth-keys:/app/keys
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: ${DB_NAME:?set DB_NAME in .env}
+      MYSQL_USER: ${DB_USER:?set DB_USER in .env}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      TEST_DB_NAME: ${TEST_DB_NAME:-chthonic_auth_test}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./docker/mysql-init.sh:/docker-entrypoint-initdb.d/10-test-db.sh:ro
+    healthcheck:
+      # TCP ping fails during first-run init (server runs with skip-networking), so healthy means really ready.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:v1.31.6
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+    restart: unless-stopped
+
+volumes:
+  mysql-data:
+  auth-keys:
