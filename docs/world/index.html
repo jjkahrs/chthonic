@@ -9,7 +9,7 @@
 <body>
 <header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
 <div class="layout">
-<nav class="side"><h2>World Server</h2><ul><li><a href="index.html" class="active">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html" class="active">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li><li><a href="client-guide.html">Client guide</a></li></ul></nav>
 <main>
 <h1 id="chthonic-world-server">Chthonic World Server</h1>
 <p>MMORPG world server for Chthonic, written in C++20. It covers the following:</p>
@@ -22,7 +22,7 @@
 <li><strong>NPCs:</strong> server-authoritative NPCs come from per-tile spawn files (with respawn timers and patrol paths) or from Lua systems, which move and destroy them; they reach players through the same interest management, with their components and state machines (see "NPCs" and "NPC spawns").</li>
 <li><strong>Architecture:</strong> an EnTT ECS runs on a fixed 20 Hz tick on one game thread, which also handles every client message. TLS and socket I/O run on <code>NET_THREADS</code> net threads (default 4), and characters persist to MySQL on DB worker threads, so the tick never waits on the network or the database.</li>
 </ul>
-<p>The wire format is in <a href="protocol.html">Protocol</a>.</p>
+<p>The wire format is in <a href="protocol.html">Protocol</a>; how to write a game client against it, end to end, is in the <a href="client-guide.html">Client implementer guide</a>.</p>
 <table>
 <thead>
 <tr>
@@ -62,7 +62,7 @@
 </tbody>
 </table>
 <h2 id="pages">Pages</h2>
-<ul class="pages"><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul>
+<ul class="pages"><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li><li><a href="client-guide.html">Client guide</a></li></ul>
 </main>
 </div>
 </body>

@@ -9,7 +9,7 @@
 <body>
 <header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
 <div class="layout">
-<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html" class="active">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html" class="active">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li><li><a href="client-guide.html">Client guide</a></li></ul></nav>
 <main>
 <h1 id="maps">Maps</h1>
 <p>The world is a set of maps (continents, dungeons), all run by this one process. A map is seamless inside; maps are
@@ -267,7 +267,7 @@ player can use. A map editor authors them;
 <tr><th>Type</th><th>Client</th><th>Server</th></tr>
 <tr><td><code>visual</code></td><td>the prefab, no collision</td><td>nothing: never in a server file</td></tr>
 <tr><td><code>obstacle</code></td><td>the prefab and a static Jolt body from <code>shape</code></td><td>its shape is cut out of the navmesh</td></tr>
-<tr><td><code>interactable</code></td><td>as an obstacle, plus <code>chthonic.interact(id)</code></td><td>as an obstacle, plus its <code>.server/interactables</code> entry: an <code>Interact</code> in range publishes its event</td></tr>
+<tr><td><code>interactable</code></td><td>as an obstacle; activating it sends <code>Interact{id}</code></td><td>as an obstacle, plus its <code>.server/interactables</code> entry: an <code>Interact</code> in range publishes its event</td></tr>
 </table>
 <p><code>objects/&lt;tx&gt;_&lt;tz&gt;.json</code> (shipped with the game) lists every object of the tile; an object belongs to the tile its
 <code>pos</code> is in:</p>
@@ -301,7 +301,7 @@ player can use. A map editor authors them;
   <code>range</code> (metres, &gt; 0, default 3), <code>data</code> (a JSON object, at most 31 deep so the event payload stays within the bus's 32) and
   <code>name</code> are optional. The Map Builder writes <code>pos</code>, <code>yaw</code>, <code>shape</code> and <code>name</code> from the object and keeps the rest.</li>
 <li><strong>Range</strong> is the horizontal distance from the player's position to the shape's edge (0 inside it):
-  <code>map::footprint_distance</code>, the same on the client's <code>chthonic.nearestInteractable</code>.</li>
+  <code>map::footprint_distance</code>; a client linking <code>chthonic_map</code> can use the same function to check range before it sends <code>Interact</code>.</li>
 <li><strong>Unknown keys</strong> are ignored in both files, so tools may keep their own.</li>
 <li><strong>Startup:</strong> the server loads the interactables files of its owned tiles (<code>Maps::owns</code>). A bad file name, a file for a
   tile not on the map, bad JSON, a bad entry, an id used twice on the map or bad <code>data</code> refuses the start with the file and

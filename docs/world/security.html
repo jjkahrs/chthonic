@@ -9,7 +9,7 @@
 <body>
 <header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
 <div class="layout">
-<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html" class="active">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li></ul></nav>
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html" class="active">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html">Protocol</a></li><li><a href="client-guide.html">Client guide</a></li></ul></nav>
 <main>
 <h1 id="security-behaviour">Security behaviour</h1>
 
@@ -81,7 +81,7 @@
 <li><strong>Thread safety:</strong> the listener and the request handling run on the game thread with the tick, so the online list and kicks never race it. Only each connection's TLS and socket I/O run on a net thread.</li>
 </ul>
 <h2 id="client-events">Client events</h2>
-<p><code>ClientEvent</code> (<code>chthonic.world.send</code> on the client) is the only way a client talks to the server's Lua systems. The rules are in the <a href="protocol.html#client-events">protocol</a>.</p>
+<p><code>ClientEvent</code> is the only message whose content a client chooses that reaches the server's Lua systems (<code>Interact</code> only picks an object id). The rules are in the <a href="protocol.html#client-events">protocol</a>.</p>
 <ul>
 <li><strong>Validation:</strong> the server re-checks every event: a name of 1–32 characters of <code>a-z0-9._</code>, at most 1 KB of JSON, and JSON that parses to an object. Anything else is a malformed frame: <code>Disconnect{malformed}</code>, logged as <code>client event rejected</code> with the session and byte count.</li>
 <li><strong>Rate limit:</strong> 10 per second per character. Excess events are dropped silently and counted; the count is logged as <code>client events dropped</code> <code>{char, count}</code> when the character leaves. The per-connection message rate applies too.</li>

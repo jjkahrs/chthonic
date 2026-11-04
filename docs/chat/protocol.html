@@ -16,7 +16,7 @@
 <h2 id="client">Game client connection (<code>CHAT_PORT</code>, 7778)</h2>
 <pre><code>client                                   chat service
   |---- TLS ---------------------------------&gt;|
-  |---- Hello{8}, Auth{accessToken} ----------&gt;|  JWKS verify; held until the account's character
+  |---- Hello{9}, Auth{accessToken} ----------&gt;|  JWKS verify; held until the account's character
   |                                            |  is online (CHAT_BIND_TIMEOUT_MS), else no_character
   |&lt;--- AuthOk{accountId, role} ----------------|
   |&lt;--- ChatChannel{1, General, joined} --------|
@@ -32,7 +32,7 @@
 <td><code>0x0001</code></td>
 <td>Hello</td>
 <td>C</td>
-<td><code>u16 protocolVersion</code> (8)</td>
+<td><code>u16 protocolVersion</code> (9); another version: <code>Disconnect{protocol_mismatch}</code></td>
 </tr>
 <tr>
 <td><code>0x0002</code></td>
@@ -130,7 +130,7 @@
 <li><strong>Unexpected:</strong> any other message after <code>AuthOk</code>, or a chat message before it, is <code>Disconnect{unexpected_message}</code>.</li>
 </ul>
 <h3 id="notices">Notices</h3>
-<p><code>ChatNotice.code</code>. "error" ones are a request refused or a message dropped (a client's <code>chat.error</code>), "notice" ones confirmations (<code>chat.notice</code>).</p>
+<p><code>ChatNotice.code</code>. "error" ones are a request refused or a message dropped, "notice" ones confirmations; a client may show them differently.</p>
 <table>
 <thead>
 <tr><th>Value</th><th>Name</th><th>Kind</th><th>Meaning</th></tr>
