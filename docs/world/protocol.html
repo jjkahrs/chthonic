@@ -9,7 +9,7 @@
 <body>
 <header class="top"><a class="brand" href="../index.html">Chthonic Docs</a><nav><a href="../auth/index.html">Auth Server</a><a href="index.html">World Server</a><a href="../chat/index.html">Chat Server</a><a href="../admin/index.html">Admin App</a></nav></header>
 <div class="layout">
-<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html" class="active">Protocol</a></li></ul></nav>
+<nav class="side"><h2>World Server</h2><ul><li><a href="index.html">Overview</a></li><li><a href="setup.html">Setup and commands</a></li><li><a href="configuration.html">Configuration</a></li><li><a href="security.html">Security behaviour</a></li><li><a href="maps.html">Maps</a></li><li><a href="areas.html">Areas</a></li><li><a href="instances.html">Instances</a></li><li><a href="persistence.html">Persistence</a></li><li><a href="lua.html">Lua components and systems</a></li><li><a href="npcs.html">NPCs</a></li><li><a href="events.html">Events</a></li><li><a href="state-machines.html">State machines</a></li><li><a href="operations.html">Operations</a></li><li><a href="tests.html">Tests</a></li><li><a href="simplifications.html">Deliberate simplifications</a></li><li><a href="protocol.html" class="active">Protocol</a></li><li><a href="client-guide.html">Client guide</a></li></ul></nav>
 <main>
 <h1 id="chthonic-world-protocol">Chthonic World Protocol</h1>
 <p><strong>Protocol version: 9</strong> (<code>kProtocolVersion</code> in <code>protocol/messages.h</code>, sent in <code>Hello</code>). A client on any other version gets <code>protocol_mismatch</code>.</p>
@@ -59,11 +59,13 @@
 </tr>
 </tbody>
 </table>
-<p>The encoder and decoder live in <code>protocol/</code>, a static library with no Asio, database or ECS dependency, so a game client can reuse it.</p>
+<p>The encoder and decoder live in <code>protocol/</code>, a static library with no Asio, database or ECS dependency, so a game client can reuse it.
+To implement a client from scratch (flow, state machine, ordering, prediction, hex dumps), read the <a href="client-guide.html">Client implementer guide</a>.</p>
 <h2 id="transport">Transport</h2>
 <ul>
 <li><strong>Connection:</strong> TLS (1.2 or later) over TCP. Default port 7777.</li>
-<li><strong>Dev certificate:</strong> with no certificate configured, the server generates a self-signed one with SANs <code>localhost</code>, <code>world</code> and <code>127.0.0.1</code>. Clients trust it by loading that file as their CA.</li>
+<li><strong>Dev certificate:</strong> with no certificate configured, the server generates a self-signed one, <code>TLS_DEV_CERT_DIR/server.crt</code>, with SANs <code>localhost</code>, <code>world</code>, <code>chat</code> and <code>127.0.0.1</code> and <code>CA:TRUE</code>. Clients trust it by loading that file as their CA.</li>
+<li><strong>Close:</strong> the server sends no TLS <code>close_notify</code>; a client sees EOF.</li>
 <li><strong>Byte order:</strong> every integer is little-endian.</li>
 <li><strong>Floats:</strong> <code>f32</code> is IEEE-754, written as its u32 bits. NaN and infinity are malformed.</li>
 </ul>
@@ -74,7 +76,8 @@
 </code></pre>
 <ul>
 <li><strong><code>length</code>:</strong> the number of payload bytes, not counting the 4-byte header.</li>
-<li><strong>Size limit:</strong> a frame whose <code>length</code> is over <code>MAX_FRAME_BYTES</code> (default 4096) gets <code>frame_too_large</code>. The server checks this from the header, before reading the payload.</li>
+<li><strong>Size limit, client to server:</strong> a frame whose <code>length</code> is over <code>MAX_FRAME_BYTES</code> (default 4096) gets <code>frame_too_large</code>. The server checks this from the header, before reading the payload.</li>
+<li><strong>Size limit, server to client:</strong> <code>MAX_FRAME_BYTES</code> does not apply. Server frames go up to the <code>u16</code> limit, 65535 payload bytes (<code>kMaxPayloadBytes</code>; e.g. a full <code>EntityMoves</code>, a large <code>ComponentUpdate</code> or <code>ServerEvent</code>), and a client must accept them.</li>
 <li><strong>Exact payload:</strong> the payload must decode to exactly <code>length</code> bytes. Short fields, a string that runs past the end, trailing bytes, or a bad enum value all mean <code>malformed</code>.</li>
 </ul>
 <h3 id="field-types">Field types</h3>
@@ -122,8 +125,8 @@
 <ul>
 <li><strong>Deadline:</strong> the whole handshake must finish within the deadline: TLS, <code>Hello</code> and <code>Auth</code>. Otherwise the server sends <code>Disconnect{handshake_timeout}</code>. A client that never starts TLS is simply closed, because there is no secure channel to send a reason on.</li>
 <li><strong>Message order:</strong><ul>
-<li>Before <code>AuthOk</code>, only <code>Hello</code> and then <code>Auth</code> are accepted. Any other message gets <code>Disconnect{unexpected_message}</code>, and so does any message sent while the token is being verified.</li>
-<li>In the lobby, <code>Move</code>, <code>Say</code> and <code>ClientEvent</code> are ignored.</li>
+<li>Before <code>AuthOk</code>, only <code>Hello</code> and then <code>Auth</code> are accepted. Any other message gets <code>Disconnect{unexpected_message}</code>, and so does any message sent while the token is being verified. <code>Ping</code> and <code>Pong</code> are the exception: in every state a <code>Ping</code> is answered with <code>Pong</code> and a <code>Pong</code> is ignored.</li>
+<li>In the lobby, <code>Move</code>, <code>Say</code>, <code>ClientEvent</code> and <code>Interact</code> are ignored. Any other non-character message gets <code>Disconnect{unexpected_message}</code>.</li>
 <li>In the world, a character request is answered with <code>CharError{already_in_world}</code>.</li>
 </ul>
 </li>
@@ -132,7 +135,7 @@
 </ul>
 <h3 id="heartbeat">Heartbeat</h3>
 <ul>
-<li><strong>Server pings:</strong> the server sends <code>Ping{nonce}</code> every <code>PING_INTERVAL_MS</code> (default 20 s). The client must answer <code>Pong{nonce}</code>.</li>
+<li><strong>Server pings:</strong> from the end of the TLS handshake, in every state, the server sends <code>Ping{nonce}</code> every <code>PING_INTERVAL_MS</code> (default 20 s; <code>IDLE_TIMEOUT_MS</code> if that is shorter). The client must answer <code>Pong{nonce}</code>.</li>
 <li><strong>Client pings:</strong> a client may also send <code>Ping</code>, and the server answers <code>Pong</code>.</li>
 <li><strong>Idle timeout:</strong> a connection that sends nothing for <code>IDLE_TIMEOUT_MS</code> (default 60 s) gets <code>Disconnect{idle_timeout}</code>.</li>
 </ul>
@@ -212,7 +215,7 @@
 <td><code>0x0020</code></td>
 <td>Move</td>
 <td>C</td>
-<td><code>vec3 pos, f32 heading, u32 clientTimeMs</code></td>
+<td><code>vec3 pos, f32 heading, u32 clientTimeMs, u32 seq, u32 epoch</code> (see <a href="#movement">Movement</a>)</td>
 </tr>
 <tr>
 <td><code>0x0021</code></td>
@@ -224,7 +227,7 @@
 <td><code>0x0022</code></td>
 <td>ClientEvent</td>
 <td>C</td>
-<td><code>str name, str json</code> (a named event for the server's Lua systems, see <a href="#client-events">Client events</a>)</td>
+<td><code>str name, str json, u32 requestId</code> (a named event for the server's Lua systems; <code>requestId</code> 0: no <code>Reply</code> wanted. See <a href="#client-events">Client events</a>)</td>
 </tr>
 <tr>
 <td><code>0x0023</code></td>
@@ -326,7 +329,7 @@
 <td><code>0x0123</code></td>
 <td>Correction</td>
 <td>S</td>
-<td><code>vec3 pos</code> (snap back to the last valid position)</td>
+<td><code>vec3 pos, u32 ackSeq, u32 epoch</code> (<code>pos</code>: snap back to the last valid position; <code>ackSeq</code>: the rejected <code>Move</code>'s <code>seq</code>; <code>epoch</code>: for every later <code>Move</code>)</td>
 </tr>
 <tr>
 <td><code>0x0124</code></td>
@@ -356,7 +359,7 @@
 <td><code>0x0128</code></td>
 <td>MapChange</td>
 <td>S</td>
-<td><code>u16 map, vec3 pos, f32 heading</code> (you were moved: to another map, or within yours)</td>
+<td><code>u16 map, vec3 pos, f32 heading, u32 epoch</code> (you were moved: to another map, or within yours; <code>epoch</code>: for every later <code>Move</code>)</td>
 </tr>
 <tr>
 <td><code>0x0129</code></td>
@@ -478,6 +481,7 @@
 <h3 id="movement">Movement</h3>
 <ul>
 <li><strong>Sending moves:</strong> the client sends <code>Move</code> with its new position. The server validates it on the next tick (20 Hz).</li>
+<li><strong>Sequence and epoch:</strong> <code>seq</code> counts the connection's <code>Move</code>s from 1; the server does not check it and only echoes the rejected one as <code>Correction.ackSeq</code>. <code>epoch</code> is 0 until the first <code>Correction</code> or <code>MapChange</code>, then the <code>epoch</code> of the last one received. A <code>Move</code> with an <code>epoch</code> lower than the server's is dropped without a <code>Correction</code>: it was sent before the client heard of the correction or the move (<a href="client-guide.html#prediction">Client guide, prediction</a>).</li>
 <li><strong>Bounds:</strong><ul>
 <li>x/z must be on a tile the player's map declares (see <a href="#maps">Maps</a>); x = 256 is already tile 1.</li>
 <li>y does not count toward speed. It is checked against the ground under the new x/z (<a href="maps.html#ground">Maps, Ground</a>): more than
@@ -491,7 +495,7 @@
 <li><strong>Client clock:</strong> <code>clientTimeMs</code> is informational. The server only trusts its own clock.</li>
 </ul>
 </li>
-<li><strong>Rejected moves:</strong> the move is dropped, the client gets one <code>Correction</code> per tick with its last valid position, and observers see nothing.</li>
+<li><strong>Rejected moves:</strong> the move is dropped and so are the moves after it in the same tick. The client gets one <code>Correction{last valid position, ackSeq = the rejected seq, epoch + 1}</code>, and observers see nothing. Moves of the old epoch that arrive later are dropped silently. Accepted moves are not acknowledged, and a y lifted onto the ground or clamped is not reported back.</li>
 <li><strong>Accepted moves:</strong> go to observers in range, never back to the mover. Each tick a player gets one
   <code>EntityMoves</code> with every move it sees (players' and NPCs'), at the point in the tick where they are sent, or
   none if nothing it sees moved. A list longer than <code>kMaxEntries</code> goes as several in a row. This saves a message, an
@@ -516,8 +520,9 @@
 <li><strong>Entering:</strong> <code>EnterWorldOk.map</code> is the map the character is on. Load it before showing the world.</li>
 <li><strong><code>MapChange</code>:</strong> the server moved you (a portal, a script). Drop every remote entity you know, load <code>map</code> if it
   differs, and place yourself at <code>pos</code> / <code>heading</code>. It is sent at once, so it always arrives before the <code>Despawn</code>s of
-  your old neighbours and the <code>Spawn</code>s of your new ones (both on the next tick). A <code>Move</code> you sent before it arrived is
-  checked from the new position with an empty speed budget, so it gets <code>Correction</code>.</li>
+  your old neighbours (sent right after it) and the <code>Spawn</code>s of your new ones (from the next AOI pass). It carries a new
+  <code>epoch</code>: a <code>Move</code> you sent before it arrived has the old one and is dropped without a <code>Correction</code>. The speed budget
+  starts empty at the new position.</li>
 <li><strong>Others:</strong> a player who changes map is a plain <code>Despawn</code> to its old neighbours and a <code>Spawn</code> to its new ones.</li>
 <li><strong>Instances:</strong> every copy of an <a href="instances.html">instance map</a> has the map's id, so entering one is a <code>MapChange</code> to that id
   like any map change; the wire does not name the copy. A move from one copy to another of the same map (only through
@@ -537,7 +542,7 @@
 <li><strong>Rejected messages</strong> (invalid, too long or over the rate) are dropped silently. The chat service applies the same rules (the same code, <code>sanitize_chat</code> and <code>WindowLimiter</code>) and answers with a <code>ChatNotice</code> instead.</li>
 </ul>
 <h3 id="client-events">Client events</h3>
-<p>A client sends a named event to the server's Lua systems as <code>ClientEvent</code> (<code>chthonic.world.send(name, data)</code> on the client). It is client-to-server only and the reverse of
+<p>A client sends a named event to the server's Lua systems as <code>ClientEvent</code>. It is client-to-server only and the reverse of
 <a href="#server-events">Server events</a>.</p>
 <ul>
 <li><strong><code>name</code>:</strong> 1–32 characters of <code>a-z</code>, <code>0-9</code>, <code>.</code> and <code>_</code> (<code>kClientEventNameMax</code>, <code>proto::valid_client_event_name</code>), e.g. <code>combat.power</code>.</li>
@@ -553,10 +558,15 @@
   <code>client.&lt;name&gt;</code> with the payload <code>{entity = &lt;sender's character entity id&gt;, data = &lt;the object as a table&gt;}</code>, in
   arrival order. The bus drain right after that tick's Lua update delivers it (<a href="lua.html#client-events">Lua, Client events</a>).</li>
 <li><strong>Trust:</strong> <code>data</code> comes from the client. Handlers must check every field (<a href="security.html#client-events">Security, Client events</a>).</li>
+<li><strong>Requests:</strong> a non-zero <code>requestId</code> is added to the bus payload as <code>requestId</code>; a handler answers it with
+  <code>chthonic.reply(entity, requestId, ok, dataOrReason)</code>, which sends <code>Reply{requestId, ok, json}</code> to the sender alone (if it is still
+  in that map context), after component replication like a server event. <code>json</code> is the data when <code>ok</code> is 1 (<code>{}</code> for none),
+  a JSON string with the reason when it is 0. The server keeps no record of requests: no handler, no <code>chthonic.reply</code> call, or an
+  event dropped by the rate limit means no <code>Reply</code>, so a client needs its own timeout. <code>requestId</code> 0 means no answer is wanted.</li>
 </ul>
 <h3 id="interact">Interact</h3>
 <p>A client activates an interactable map object (a shrine, a lever) with <code>Interact{u32 objectId}</code>: the object's <code>id</code> from
-the map's <code>objects/&lt;tx&gt;_&lt;tz&gt;.json</code> (<code>chthonic.interact(id)</code> on the client).
+the map's <code>objects/&lt;tx&gt;_&lt;tz&gt;.json</code>.
 Client-to-server only.</p>
 <ul>
 <li><strong>Check:</strong> on the next tick, the id must be an interactable of the player's current map (its
@@ -601,14 +611,14 @@ server-authoritative: there is no client-to-server component message, and a clie
 <a href="events.html">Events</a>). Each recipient gets one <code>ServerEvent</code>. It is server-to-client only: a client
 that sends one gets <code>Disconnect{unexpected_message}</code>.</p>
 <ul>
-<li><strong><code>name</code>:</strong> the non-empty name the system chose, e.g. <code>player.left</code>. A client publishes it as <code>server.&lt;name&gt;</code>.</li>
+<li><strong><code>name</code>:</strong> the non-empty name the system chose, e.g. <code>player.left</code>. A client may show it, or hand it to its own game code, however it likes.</li>
 <li><strong><code>json</code>:</strong> the payload as compact JSON: any plain-data value (<code>null</code> when the system sent none). Bytes in Lua
   strings that aren't UTF-8 are replaced with U+FFFD.</li>
 <li><strong>Who gets it:</strong><ul>
 <li><code>sendTo(e, ...)</code>: the session of character <code>e</code>. An NPC has no session: nobody.</li>
 <li><code>sendNearby(e, ...)</code>: <code>e</code>'s session and every session that currently sees <code>e</code> (the <code>"aoi"</code> audience). For an NPC,
   the sessions that see it.</li>
-<li><code>broadcast(...)</code>: every player in the zone.</li>
+<li><code>broadcast(...)</code>: every player in the world, on every map (its own map context's players with that tick's other events, the other contexts' at the end of the tick).</li>
 <li>The audience is taken when the event is sent, not when the system queued it. A character no longer in the world
   gets nothing, and neither does anyone around it.</li>
 </ul>
@@ -616,8 +626,8 @@ that sends one gets <code>Disconnect{unexpected_message}</code>.</p>
 <li><strong>When:</strong> once per tick, after <code>ComponentUpdate</code> / <code>ComponentRemove</code>, in the order the systems queued them. So a
   client already has the <code>Spawn</code> and the latest component values of any entity the event refers to. Events queued in
   <code>onLeave</code> go out at the despawn, before that character's <code>Despawn</code>; events queued in <code>onEnter</code> go out on the next tick.</li>
-<li><strong>Ordering:</strong> no <code>ServerEvent</code> about or to an entity comes before its <code>Spawn</code> (or the owner's <code>EnterWorldOk</code>) or
-  after its <code>Despawn</code>.</li>
+<li><strong>Ordering:</strong> no <code>ServerEvent</code> to an entity's <code>sendTo</code> / <code>sendNearby</code> audience comes before its <code>Spawn</code> (or the owner's <code>EnterWorldOk</code>) or
+  after its <code>Despawn</code>. A <code>broadcast</code> reaches players on every map, so its payload can name entities the receiver never saw.</li>
 <li><strong>Size:</strong> the frame must fit the <code>u16</code> length limit: <code>4 + name + json</code> bytes at most 65535. A bigger event is
   rejected by the Lua call with an error; nothing is sent.</li>
 <li><strong>Bandwidth:</strong> each event is one message per recipient. <code>broadcast</code> reaches every player, so one call costs N
@@ -645,7 +655,7 @@ that sends one gets <code>Disconnect{unexpected_message}</code>.</p>
 <td>1</td>
 <td><code>protocol_mismatch</code></td>
 <td>D</td>
-<td><code>Hello.protocolVersion</code> is not 5</td>
+<td><code>Hello.protocolVersion</code> is not 9</td>
 </tr>
 <tr>
 <td>2</td>
@@ -663,7 +673,7 @@ that sends one gets <code>Disconnect{unexpected_message}</code>.</p>
 <td>4</td>
 <td><code>frame_too_large</code></td>
 <td>D</td>
-<td>Frame <code>length</code> over <code>MAX_FRAME_BYTES</code></td>
+<td>Client frame <code>length</code> over <code>MAX_FRAME_BYTES</code> (server frames may be up to 65535)</td>
 </tr>
 <tr>
 <td>5</td>
