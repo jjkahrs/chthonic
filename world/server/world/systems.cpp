@@ -42,16 +42,18 @@ proto::Spawn spawn_message(const entt::registry& reg, entt::entity e) {
 }
 
 // Validates each queued Move against map bounds, the navmesh (if the map has one and rules.navCheck), speed and the
-// ground; a rejected move snaps the client back with Correction{pos, its seq, a new epoch}. Moves of an older epoch
-// were sent before the client heard of that Correction: dropped without another (the client replays them on top of
-// the Correction itself). A MoveLock'd character (chthonic.setMovable) has every move rejected.
+// ground; a rejected move snaps the client back with Correction{pos, its seq, a new epoch}, and so does an accepted one
+// whose y validate_move changed (lifted onto the ground, clamped to MIN_Y/MAX_Y), with the adjusted pos. Moves of
+// another epoch are dropped without a Correction: an older one was sent before the client heard of the last
+// Correction (the client replays it on top of the Correction itself), a newer one names an epoch the server never
+// started. A MoveLock'd character (chthonic.setMovable) has every move rejected.
 // ponytail: off_mesh corrects at once, so a player cannot drop off a cliff face; a grace period if falls are wanted.
 void movement_system(entt::registry& reg, const MoveRules& rules, const Maps& maps, const Send& send, TimePoint now) {
     for (auto [e, pending, tf, mr, ms, link] : reg.view<PendingMoves, Transform, MapRef, MoveState, SessionLink>().each()) {
         if (pending.moves.empty()) continue;
-        std::optional<uint32_t> rejected; // the seq of the rejected move
+        std::optional<uint32_t> rejected; // the seq of the rejected (or y-adjusted) move
         for (const auto& m : pending.moves) {
-            if (m.epoch < ms.epoch) continue;
+            if (m.epoch != ms.epoch) continue;
             if (reg.all_of<MoveLock>(e)) { rejected = m.seq; break; }
             proto::Vec3 to = m.pos;
             const auto ground = maps.ground(mr.map, to.x, to.z); // nullopt: off the map
@@ -61,6 +63,10 @@ void movement_system(entt::registry& reg, const MoveRules& rules, const Maps& ma
                 tf.heading = m.heading;
                 reg.emplace_or_replace<Moved>(e);
                 reg.emplace_or_replace<Dirty>(e);
+                if (to.y != m.pos.y) {
+                    rejected = m.seq;
+                    break; // the client has the wrong y: corrected, the rest of the batch is of the old epoch now
+                }
             } else {
                 rejected = m.seq;
                 break; // the rest of the batch is of the old epoch now
@@ -207,12 +213,14 @@ void chat_system(entt::registry& reg, const ChatRules& rules, const Mutes& mutes
     }
 }
 
-void client_event_in_system(entt::registry& reg, EventBus& bus, TimePoint now) {
-    for (auto [e, pending, limit, ch] : reg.view<PendingClientEvents, ClientEventLimit, CharacterRef>().each()) {
+void client_event_in_system(entt::registry& reg, EventBus& bus, const Send& send, TimePoint now) {
+    for (auto [e, pending, limit, ch, link] :
+         reg.view<PendingClientEvents, ClientEventLimit, CharacterRef, SessionLink>().each()) {
         for (auto& event : pending.events) {
             if (!limit.limiter.allow(now)) {
                 ++limit.dropped;
                 log::debug("client event rate limited", {{"char", ch.charId}, {"event", event.name}});
+                if (event.requestId) send(link.sessionId, proto::Reply{event.requestId, false, R"("rate_limited")"});
                 continue;
             }
             nlohmann::json payload{{"entity", wire_id(e)}, {"data", std::move(event.data)}};
@@ -320,12 +328,11 @@ void component_replication_system(entt::registry& reg, const lua::Defs& defs, co
 }
 
 void client_event_system(entt::registry& reg, std::vector<lua::ClientEvent> events, const Send& send,
-                         const SendMany& sendMany) {
+                         const SendMany& sendMany, const std::unordered_map<entt::entity, uint32_t>& sessions) {
     for (auto& event : events) {
-        if (event.to == lua::ClientEvent::To::reply) { // chthonic.reply: the requester alone, if still here
-            const auto e = from_wire(event.entity);
-            if (const auto* link = reg.valid(e) ? reg.try_get<SessionLink>(e) : nullptr)
-                send(link->sessionId, proto::Reply{event.requestId, event.ok, std::move(event.json)});
+        if (event.to == lua::ClientEvent::To::reply) { // chthonic.reply: the requester alone, on any map
+            if (const auto it = sessions.find(from_wire(event.entity)); it != sessions.end())
+                send(it->second, proto::Reply{event.requestId, event.ok, std::move(event.json)});
             continue;
         }
         const proto::Message msg = proto::ServerEvent{std::move(event.name), std::move(event.json)};

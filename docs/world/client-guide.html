@@ -83,7 +83,7 @@ realm may change them.</p>
 </ul>
 <h3 id="chat-leg">4. Chat</h3>
 <ul>
-<li><strong>Where:</strong> right after <code>EnterWorldOk</code> the world server sends <code>ChatServer{host, port}</code> (only when the realm sets
+<li><strong>Where:</strong> as the next message after <code>EnterWorldOk</code> the world server sends <code>ChatServer{host, port}</code> (only when the realm sets
   <code>CHAT_PUBLIC_HOST</code>; without it there is no chat service to use).</li>
 <li><strong>Connect:</strong> a second TLS connection there, the same <a href="#frame">frames</a>, <code>Hello{9}</code> and <code>Auth</code> with a valid access token
   of the same account. The chat service holds the <code>AuthOk</code> until the world server has reported the account's character as
@@ -227,8 +227,8 @@ part of the handshake.</p>
 <li><code>EnterWorldOk.map</code> may differ from where the character was saved: a saved instance copy that is gone or full puts it at the
   instance map's exit, and a position no longer on any loaded map at the <code>START_MAP</code> spawn (<code>world/server/world/world.cpp</code> <code>spawn</code>).
   Load that map before showing the world.</li>
-<li><code>ChatServer</code> always comes after <code>EnterWorldOk</code>. Normally it is the very next message; a server Lua <code>onEnter</code> that moves the
-  character to another map at once would put that <code>MapChange</code> before it.</li>
+<li><code>ChatServer</code>, when sent, is always the very next message after <code>EnterWorldOk</code>, before anything else, even the
+  <code>MapChange</code> of a server Lua <code>onEnter</code> that moves the character to another map at once.</li>
 </ul>
 <h3 id="seq-movement">Movement, rejection, Correction</h3>
 <pre><code>client                                        world server (tick every 50 ms)
@@ -238,7 +238,9 @@ part of the handshake.</p>
   |---- Move{pos4, seq 4, epoch 0} -----------&gt;|
   |&lt;--- Correction{pos2, ackSeq 3, epoch 1} ---|  pos2: the last accepted position
   |                                             |  tick: seq 4 is epoch 0 &lt; 1: dropped, no second Correction
-  |---- Move{pos2', seq 5, epoch 1} ----------&gt;|  tick: validated from pos2 again</code></pre>
+  |---- Move{pos2', seq 5, epoch 1} ----------&gt;|  tick: validated from pos2 again
+  |---- Move{pos6, seq 6, epoch 1} -----------&gt;|  tick: pos6 1 m under the ground: accepted, y lifted onto it
+  |&lt;--- Correction{pos6 lifted, ackSeq 6, epoch 2}  the adjusted position; the rest of that batch dropped</code></pre>
 <h3 id="seq-mapchange">MapChange (portal, script, instance copy)</h3>
 <pre><code>client                                        world server
   |---- Move{.., epoch 1} --------------------&gt;|  walks into a portal area: accepted
@@ -262,12 +264,13 @@ part of the handshake.</p>
 <h3 id="seq-request">ClientEvent with requestId, Reply</h3>
 <pre><code>client                                        world server
   |---- ClientEvent{"shop.buy", {...}, requestId 17} ---&gt;|  invalid name / JSON: Disconnect{malformed}
-  |                                             |  next tick: over 10/s: dropped silently (no Reply, ever)
+  |                                             |  next tick: over 10/s: dropped, Reply{17, ok 0, json "rate_limited"}
   |                                             |  else published to the Lua bus as client.shop.buy
   |                                             |    {entity, data, requestId = 17}; a handler may call chthonic.reply
   |&lt;--- ComponentUpdate (if the handler changed state) ---|
   |&lt;--- Reply{17, ok 1, json data} ------------|  same tick, after component replication, with the ServerEvents
-  |     or Reply{17, ok 0, json "reason"}      |  or nothing at all: the client must time out</code></pre>
+  |     or Reply{17, ok 0, json "reason"}      |  wherever you are now (also after a MapChange);
+  |                                             |  or nothing, if no handler replies: the client must time out</code></pre>
 <h3 id="seq-kick">Duplicate login, kick, shutdown</h3>
 <pre><code>old client          new client                    world server
   |                    |---- Hello, Auth -----------&gt;|  same account
@@ -292,6 +295,7 @@ shutdown:     every client: ServerEvent x n (every onLeave), Despawn x n (other 
 <li>a portal onto another map: <code>ServerEvent</code>s from <code>onMapLeave</code>, then <code>MapChange</code> + <code>Despawn</code>s;</li>
 <li><code>Spawn</code> / <code>Despawn</code> (AOI);</li>
 <li><code>ChatMsg</code> / <code>ChatNotice</code> (proximity chat);</li>
+<li><code>Reply{requestId, ok 0, "rate_limited"}</code> for a request dropped by the <code>ClientEvent</code> rate limit;</li>
 <li>during the Lua update: <code>Despawn</code>s of NPCs it destroys, <code>MapChange</code> + <code>Despawn</code>s of its same-map transfers;</li>
 <li><code>EntityMoves</code>;</li>
 <li><code>ComponentUpdate</code> / <code>ComponentRemove</code>;</li>
@@ -322,14 +326,14 @@ seen.</p>
 <tr id="msg-spawn"><td><code>0x0120</code></td><td>Spawn</td><td><code>u32 entityId, str name, vec3 pos, f32 heading, u8 kind</code> (0 player, 1 npc), <code>str template</code></td><td>An entity came into view (AOI, a login, an NPC created)</td><td>Create the entity (<a href="#entities">Entities</a>); a Spawn for an id you hold replaces it</td></tr>
 <tr id="msg-despawn"><td><code>0x0121</code></td><td>Despawn</td><td><code>u32 entityId</code></td><td>Left view, logged out, changed map, destroyed</td><td>Remove the entity and all its components; ignore an unknown id</td></tr>
 <tr id="msg-entitymoves"><td><code>0x0122</code></td><td>EntityMoves</td><td><code>u16 count</code>, then <code>count</code> &times; (<code>u32 entityId, vec3 pos, f32 heading</code>); <code>count</code> &le; 3276</td><td>Once per tick with every entity in view that moved; several in a row only past 3276 entries; none if nothing moved</td><td>Update each entity's target position (interpolate); never contains yourself</td></tr>
-<tr id="msg-correction"><td><code>0x0123</code></td><td>Correction</td><td><code>vec3 pos, u32 ackSeq, u32 epoch</code></td><td>A <code>Move</code> was rejected (at most one per tick)</td><td>Snap to <code>pos</code>, use <code>epoch</code> on every later <code>Move</code> (<a href="#prediction">prediction</a>)</td></tr>
+<tr id="msg-correction"><td><code>0x0123</code></td><td>Correction</td><td><code>vec3 pos, u32 ackSeq, u32 epoch</code></td><td>A <code>Move</code> was rejected, or accepted with its y adjusted (at most one per tick)</td><td>Snap to <code>pos</code>, use <code>epoch</code> on every later <code>Move</code> (<a href="#prediction">prediction</a>)</td></tr>
 <tr id="msg-chatmsg"><td><code>0x0124</code></td><td>ChatMsg</td><td><code>u8 kind</code> (0 say, 1 yell, 2 emote), <code>str fromName, str text</code> (UTF-8)</td><td>Proximity chat, your own included</td><td>Show it; emote as "<em>fromName</em> <em>text</em>"</td></tr>
 <tr id="msg-componentupdate"><td><code>0x0125</code></td><td>ComponentUpdate</td><td><code>u32 entityId, str name, str json</code></td><td>A replicated Lua component's full value (<a href="#components">below</a>)</td><td>Replace the stored value of (entity, name)</td></tr>
 <tr id="msg-componentremove"><td><code>0x0126</code></td><td>ComponentRemove</td><td><code>u32 entityId, str name</code></td><td>The entity lost the component</td><td>Delete (entity, name)</td></tr>
 <tr id="msg-serverevent"><td><code>0x0127</code></td><td>ServerEvent</td><td><code>str name, str json</code></td><td>The server's Lua sent a named event (<a href="#server-events">below</a>)</td><td>Dispatch by name; ignore names you do not know</td></tr>
 <tr id="msg-mapchange"><td><code>0x0128</code></td><td>MapChange</td><td><code>u16 map, vec3 pos, f32 heading, u32 epoch</code></td><td>The server moved you (portal, script, instance copy, or within your map)</td><td>Drop every remote entity and its components; load <code>map</code> if it changed; place yourself; set <code>epoch</code>; reset prediction</td></tr>
-<tr id="msg-reply"><td><code>0x0129</code></td><td>Reply</td><td><code>u32 requestId, u8 ok, str json</code></td><td>The Lua answered a <code>ClientEvent</code> with that <code>requestId</code></td><td>Complete the pending request: <code>ok</code> 1: <code>json</code> is the data; <code>ok</code> 0: <code>json</code> is a JSON string, the reason</td></tr>
-<tr id="msg-chatserver"><td><code>0x012A</code></td><td>ChatServer</td><td><code>str host, u16 port</code></td><td>After <code>EnterWorldOk</code>, if the realm has a chat service</td><td>Open the <a href="#chat-leg">chat connection</a></td></tr>
+<tr id="msg-reply"><td><code>0x0129</code></td><td>Reply</td><td><code>u32 requestId, u8 ok, str json</code></td><td>The Lua answered a <code>ClientEvent</code> with that <code>requestId</code>, or the server dropped it for the rate limit (<code>ok</code> 0, <code>"rate_limited"</code>)</td><td>Complete the pending request: <code>ok</code> 1: <code>json</code> is the data; <code>ok</code> 0: <code>json</code> is a JSON string, the reason</td></tr>
+<tr id="msg-chatserver"><td><code>0x012A</code></td><td>ChatServer</td><td><code>str host, u16 port</code></td><td>The next message after <code>EnterWorldOk</code>, if the realm has a chat service</td><td>Open the <a href="#chat-leg">chat connection</a></td></tr>
 <tr id="msg-chatnotice"><td><code>0x0132</code></td><td>ChatNotice</td><td><code>u8 code, str name, u32 minutes</code></td><td>From the world server only <code>muted</code> (2), <code>name</code> empty: your say / yell / emote was dropped</td><td>Tell the player they are muted for <code>minutes</code> more</td></tr>
 </tbody>
 </table>
@@ -377,11 +381,11 @@ server are <code>Disconnect{unexpected_message}</code> (a valid payload) or <cod
 <li><strong><code>seq</code>:</strong> number every <code>Move</code> of the connection 1, 2, 3, ... and never reset it (not on <code>Correction</code> or <code>MapChange</code>). The
   server does not check it; it only echoes the rejected one as <code>Correction.ackSeq</code>.</li>
 <li><strong><code>epoch</code>:</strong> 0 after <code>EnterWorldOk</code>; then always the <code>epoch</code> of the last <code>Correction</code> or <code>MapChange</code> received. The server
-  drops, without a <code>Correction</code>, every <code>Move</code> whose <code>epoch</code> is lower than its own (sent before the client heard of the
-  correction or the move). A client that never adopts the new epoch has every later move dropped and stands still on the server.</li>
+  drops, without a <code>Correction</code>, every <code>Move</code> whose <code>epoch</code> is not its own: a lower one was sent before the client heard of
+  the correction or the move, a higher one names an epoch the server never started. A client that never adopts the new epoch has every later move dropped and stands still on the server.</li>
 <li><strong>Validation</strong> (<code>world/server/world/systems.cpp</code> <code>movement_system</code>, <code>world/server/world/rules.cpp</code> <code>validate_move</code>), on the next tick,
   for every queued <code>Move</code> in arrival order:<ol>
-<li>older epoch: skipped silently;</li>
+<li>epoch not the server's (older or newer): skipped silently;</li>
 <li>movement locked by the server's Lua (<code>chthonic.setMovable</code>): rejected;</li>
 <li>x/z not on a tile the map declares: rejected;</li>
 <li>speed: the x/z distance from the last accepted position must fit the budget, which refills at <code>MAX_SPEED + SPEED_TOLERANCE</code>
@@ -391,10 +395,11 @@ server are <code>Disconnect{unexpected_message}</code> (a valid payload) or <cod
   always allowed);</li>
 <li>navmesh: on a map with one and <code>MOVE_NAV_CHECK</code> on, the end point must be on it: rejected otherwise;</li>
 <li>accepted: y more than <code>MOVE_GROUND_TOLERANCE</code> (0.5 m) under the ground is lifted onto it, then clamped to
-  <code>[MIN_Y, MAX_Y]</code>. This adjustment is <em>not</em> reported back to the mover; observers see the adjusted y.</li>
+  <code>[MIN_Y, MAX_Y]</code>. If either changed y, the move is applied with the adjusted y and then handled like a rejection, with
+  <code>Correction{adjusted position, ackSeq = its seq, epoch + 1}</code>; observers see the adjusted y. A y left as sent gets no <code>Correction</code>.</li>
 </ol>
-The first rejection in a tick ends that tick's batch: the moves after it are discarded, and one
-<code>Correction{last accepted position, ackSeq = rejected seq, epoch + 1}</code> goes out. <code>heading</code> is taken as sent.</li>
+The first rejection (or y-adjusted move) in a tick ends that tick's batch: the moves after it are discarded, and one
+<code>Correction{last accepted position, ackSeq = that seq, epoch + 1}</code> goes out. <code>heading</code> is taken as sent.</li>
 <li><strong>Accepted moves are not acknowledged.</strong> A client knows a move was accepted only because no <code>Correction</code> named it.</li>
 <li><strong>Rate:</strong> one <code>Move</code> per tick (every 50 ms) when the player moves is enough; more is allowed (they are all checked in the
   next tick) but counts toward the message rate.</li>
@@ -477,11 +482,12 @@ engine only carries them. A client must handle the messages for any names, and a
   encoder. The server's Lua receives <code>{entity = your entity, data = the object}</code> (plus <code>requestId</code> when it is not 0) on the next
   tick, in arrival order, and must treat <code>data</code> as untrusted.</li>
 <li><strong>Requests:</strong> pick a non-zero <code>requestId</code> unique among your pending ones (a counter from 1). The server keeps no record of
-  requests: a <code>Reply</code> comes only if a handler calls <code>chthonic.reply</code>, nothing stops a handler from replying twice, and a dropped
-  (rate-limited) event or a handler that never answers produces no <code>Reply</code>. Use a client-side timeout. A <code>Reply</code> reaches you only
-  while you are still in the map context that got the event.</li>
+  requests: a <code>Reply</code> comes only if a handler calls <code>chthonic.reply</code>, nothing stops a handler from replying twice, and a handler
+  that never answers produces no <code>Reply</code>. Use a client-side timeout. A request dropped by the rate limit (10 per second) gets
+  <code>Reply{requestId, ok 0, "rate_limited"}</code> in the next tick. A <code>Reply</code> reaches you on whatever map (or instance copy) you are on
+  when it is sent, also after a <code>MapChange</code>; it is lost only if you left the world.</li>
 <li><strong><code>Reply.json</code>:</strong> <code>ok</code> 1: the data (a JSON value; <code>{}</code> when the handler gave none); <code>ok</code> 0: a JSON string, the reason, e.g.
-  <code>"not enough gold"</code>.</li>
+  <code>"not enough gold"</code>, or <code>"rate_limited"</code> from the server itself.</li>
 </ul>
 <h3 id="interact">Interact</h3>
 <p><code>Interact{objectId}</code>: the <code>id</code> of an interactable in the map's <code>objects/&lt;tx&gt;_&lt;tz&gt;.json</code> (<a href="maps.html#objects">Maps, Objects</a>). The
@@ -506,8 +512,8 @@ a client for another game should not depend on these. Payload key order below is
 <tr><td><code>test.shrine</code></td><td><code>{"entity", "map", "msg"?, "object"}</code>; <code>msg</code>: the interactable's <code>data.msg</code>, if any</td><td><code>sendTo</code>: the player who interacted</td><td>An accepted <code>Interact</code> on an object whose event is <code>test.shrine</code> (the sample hills map's Test Shrine; <code>world/maps</code> ships none)</td><td><code>systems/test_hooks.lua</code></td><td>test hook</td></tr>
 </tbody>
 </table>
-<p>No shipped script calls <code>chthonic.reply</code>: against the shipped Lua, a <code>ClientEvent</code> with a <code>requestId</code> never gets a <code>Reply</code>
-(<code>test.echo</code> answers with a <code>ServerEvent</code> either way).</p>
+<p>No shipped script calls <code>chthonic.reply</code>: against the shipped Lua, a <code>ClientEvent</code> with a <code>requestId</code> gets a <code>Reply</code> only when
+the rate limit drops it (<code>test.echo</code> answers with a <code>ServerEvent</code> either way).</p>
 <h3 id="catalog-client-events">ClientEvents handled</h3>
 <table>
 <thead><tr><th>Name</th><th>Data</th><th>Effect</th><th>Kind</th></tr></thead>

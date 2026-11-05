@@ -365,7 +365,7 @@ To implement a client from scratch (flow, state machine, ordering, prediction, h
 <td><code>0x0129</code></td>
 <td>Reply</td>
 <td>S</td>
-<td><code>u32 requestId, u8 ok, str json</code> (the answer to a <code>ClientEvent</code> with a <code>requestId</code>)</td>
+<td><code>u32 requestId, u8 ok, str json</code> (the answer to a <code>ClientEvent</code> with a <code>requestId</code>: the Lua's, or <code>ok</code> 0 <code>"rate_limited"</code> from the server)</td>
 </tr>
 <tr>
 <td><code>0x012A</code></td>
@@ -481,12 +481,13 @@ To implement a client from scratch (flow, state machine, ordering, prediction, h
 <h3 id="movement">Movement</h3>
 <ul>
 <li><strong>Sending moves:</strong> the client sends <code>Move</code> with its new position. The server validates it on the next tick (20 Hz).</li>
-<li><strong>Sequence and epoch:</strong> <code>seq</code> counts the connection's <code>Move</code>s from 1; the server does not check it and only echoes the rejected one as <code>Correction.ackSeq</code>. <code>epoch</code> is 0 until the first <code>Correction</code> or <code>MapChange</code>, then the <code>epoch</code> of the last one received. A <code>Move</code> with an <code>epoch</code> lower than the server's is dropped without a <code>Correction</code>: it was sent before the client heard of the correction or the move (<a href="client-guide.html#prediction">Client guide, prediction</a>).</li>
+<li><strong>Sequence and epoch:</strong> <code>seq</code> counts the connection's <code>Move</code>s from 1; the server does not check it and only echoes the rejected one as <code>Correction.ackSeq</code>. <code>epoch</code> is 0 until the first <code>Correction</code> or <code>MapChange</code>, then the <code>epoch</code> of the last one received. A <code>Move</code> whose <code>epoch</code> is not the server's is dropped without a <code>Correction</code>: a lower one was sent before the client heard of the correction or the move, a higher one names an epoch the server never started (<a href="client-guide.html#prediction">Client guide, prediction</a>).</li>
 <li><strong>Bounds:</strong><ul>
 <li>x/z must be on a tile the player's map declares (see <a href="#maps">Maps</a>); x = 256 is already tile 1.</li>
 <li>y does not count toward speed. It is checked against the ground under the new x/z (<a href="maps.html#ground">Maps, Ground</a>): more than
   <code>MOVE_GROUND_TOLERANCE</code> (0.5 m) below it is lifted onto it, and a move ending more than <code>MOVE_MAX_AIR</code> (6 m) above
-  it is rejected unless it descends (falling is always allowed). Then y is clamped to <code>[MIN_Y, MAX_Y]</code>.</li>
+  it is rejected unless it descends (falling is always allowed). Then y is clamped to <code>[MIN_Y, MAX_Y]</code>. A y changed by either is
+  applied and reported to the mover with a <code>Correction</code> (below).</li>
 </ul>
 </li>
 <li><strong>Speed:</strong><ul>
@@ -495,7 +496,8 @@ To implement a client from scratch (flow, state machine, ordering, prediction, h
 <li><strong>Client clock:</strong> <code>clientTimeMs</code> is informational. The server only trusts its own clock.</li>
 </ul>
 </li>
-<li><strong>Rejected moves:</strong> the move is dropped and so are the moves after it in the same tick. The client gets one <code>Correction{last valid position, ackSeq = the rejected seq, epoch + 1}</code>, and observers see nothing. Moves of the old epoch that arrive later are dropped silently. Accepted moves are not acknowledged, and a y lifted onto the ground or clamped is not reported back.</li>
+<li><strong>Rejected moves:</strong> the move is dropped and so are the moves after it in the same tick. The client gets one <code>Correction{last valid position, ackSeq = the rejected seq, epoch + 1}</code>, and observers see nothing. Moves of the old epoch that arrive later are dropped silently.</li>
+<li><strong>Adjusted y:</strong> an accepted move whose y was lifted onto the ground or clamped is applied with the adjusted y and handled like a rejection: one <code>Correction{adjusted position, ackSeq = its seq, epoch + 1}</code>, the moves after it in the same tick dropped. Other accepted moves are not acknowledged.</li>
 <li><strong>Accepted moves:</strong> go to observers in range, never back to the mover. Each tick a player gets one
   <code>EntityMoves</code> with every move it sees (players' and NPCs'), at the point in the tick where they are sent, or
   none if nothing it sees moved. A list longer than <code>kMaxEntries</code> goes as several in a row. This saves a message, an
@@ -535,7 +537,7 @@ To implement a client from scratch (flow, state machine, ordering, prediction, h
 <ul>
 <li><strong>Delivery:</strong> <code>Say{kind, text}</code> goes to the sender and back as <code>ChatMsg{kind, fromName, text}</code>: <code>say</code> to everyone in view (the AOI audience), <code>yell</code> to every player on the same map within <code>CHAT_YELL_RADIUS</code> (default 300 m, x/z; it may reach past the view radius), <code>emote</code> to the say audience, shown as "<em>Name</em> <em>text</em>" (<code>/me waves</code>: "Alice waves").</li>
 <li><strong>Muted characters:</strong> while the chat service has the character muted (its <code>MuteState</code>s over the link), a say, yell or emote is dropped and the sender gets <code>ChatNotice{muted, "", minutes left}</code>. With the link down, the last mutes it sent stay in force until they end.</li>
-<li><strong>Where chat is:</strong> right after <code>EnterWorldOk</code> the server sends <code>ChatServer{host, port}</code> (when <code>CHAT_PUBLIC_HOST</code> is set); the client opens a second TLS connection there with the same access token. See <a href="../chat/protocol.html">Chat service protocol</a>.</li>
+<li><strong>Where chat is:</strong> as the next message after <code>EnterWorldOk</code>, before any other, the server sends <code>ChatServer{host, port}</code> (when <code>CHAT_PUBLIC_HOST</code> is set); the client opens a second TLS connection there with the same access token. See <a href="../chat/protocol.html">Chat service protocol</a>.</li>
 <li><strong>Size:</strong> the text must be valid UTF-8 and at most <code>CHAT_MAX_BYTES</code> (default 256) bytes.</li>
 <li><strong>Control characters:</strong> C0, DEL and C1 are stripped.</li>
 <li><strong>Rate limit:</strong> <code>CHAT_RATE_COUNT</code> per <code>CHAT_RATE_WINDOW_MS</code> (default 5 per 10 s). Rejected messages count toward it.</li>
@@ -551,7 +553,7 @@ To implement a client from scratch (flow, state machine, ordering, prediction, h
   object gets <code>Disconnect{malformed}</code>, like any other malformed frame.</li>
 <li><strong>Phase:</strong> only accepted in the world. In the lobby it is ignored, like a stale <code>Move</code> or <code>Say</code>.</li>
 <li><strong>Rate limit:</strong> 10 per 1 s window per character (<code>WorldRules</code> <code>clientEventRateCount</code> /
-  <code>clientEventRateWindow</code>, not configurable). Events over the limit are dropped silently and counted; the count is logged as
+  <code>clientEventRateWindow</code>, not configurable). Events over the limit are dropped and counted (one with a <code>requestId</code> is answered <code>rate_limited</code>, below); the count is logged as
   <code>"client events dropped" {char, count}</code> when the character leaves. This is on top of the connection's
   <a href="#abuse-limits">message rate</a>.</li>
 <li><strong>Delivery:</strong> on the next tick, after chat and before the spawner and the Lua update, each event is published on the Lua bus as
@@ -559,10 +561,11 @@ To implement a client from scratch (flow, state machine, ordering, prediction, h
   arrival order. The bus drain right after that tick's Lua update delivers it (<a href="lua.html#client-events">Lua, Client events</a>).</li>
 <li><strong>Trust:</strong> <code>data</code> comes from the client. Handlers must check every field (<a href="security.html#client-events">Security, Client events</a>).</li>
 <li><strong>Requests:</strong> a non-zero <code>requestId</code> is added to the bus payload as <code>requestId</code>; a handler answers it with
-  <code>chthonic.reply(entity, requestId, ok, dataOrReason)</code>, which sends <code>Reply{requestId, ok, json}</code> to the sender alone (if it is still
-  in that map context), after component replication like a server event. <code>json</code> is the data when <code>ok</code> is 1 (<code>{}</code> for none),
-  a JSON string with the reason when it is 0. The server keeps no record of requests: no handler, no <code>chthonic.reply</code> call, or an
-  event dropped by the rate limit means no <code>Reply</code>, so a client needs its own timeout. <code>requestId</code> 0 means no answer is wanted.</li>
+  <code>chthonic.reply(entity, requestId, ok, dataOrReason)</code>, which sends <code>Reply{requestId, ok, json}</code> to the sender alone (on whatever map or
+  instance copy it is on by then; nothing if it left the world), after component replication like a server event. <code>json</code> is the data when <code>ok</code> is 1 (<code>{}</code> for none),
+  a JSON string with the reason when it is 0. An event with a <code>requestId</code> dropped by the rate limit gets
+  <code>Reply{requestId, 0, "rate_limited"}</code> at once (that tick, after chat). Otherwise the server keeps no record of requests: no handler or no
+  <code>chthonic.reply</code> call means no <code>Reply</code>, so a client needs its own timeout. <code>requestId</code> 0 means no answer is wanted.</li>
 </ul>
 <h3 id="interact">Interact</h3>
 <p>A client activates an interactable map object (a shrine, a lever) with <code>Interact{u32 objectId}</code>: the object's <code>id</code> from

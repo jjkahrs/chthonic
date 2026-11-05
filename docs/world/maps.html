@@ -246,9 +246,9 @@ counted the long way round (Chebyshev: <code>max(|dx|, |dz|)</code>), on the pla
   file that fails to decode refuses the start (<code>maps/hills/heights/0_0.png: png: 8-bit with 1 channel(s), need 16-bit
   grayscale</code>).</li>
 <li><strong>Height:</strong> <code>Maps::ground(map, x, z)</code> is <code>chthonic_map</code>'s <code>ground_at</code>: the triangle under the point, the same triangles as
-  the client's Jolt heightfield, so client and server agree to within float rounding. Off the map's tiles it is empty.</li>
+  a heightfield built from the same heights, so any implementation using them agrees with the server to within float rounding. Off the map's tiles it is empty.</li>
 <li><strong>Player moves:</strong> after the speed check, against the ground under the new position:<ul>
-<li>more than <code>MOVE_GROUND_TOLERANCE</code> (0.5 m) below it: accepted and lifted onto it;</li>
+<li>more than <code>MOVE_GROUND_TOLERANCE</code> (0.5 m) below it: accepted and lifted onto it, with a <code>Correction</code> to the lifted position;</li>
 <li>more than <code>MOVE_MAX_AIR</code> (6 m) above it and not lower than the last position: rejected (<code>Correction</code>), so no
   flying or hovering;</li>
 <li>lower than the last position: accepted, however high (falling).</li>

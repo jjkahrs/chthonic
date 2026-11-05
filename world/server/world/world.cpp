@@ -197,7 +197,8 @@ std::vector<lua::SystemStatus> World::script_status() const {
     return merged;
 }
 
-entt::entity World::spawn(uint32_t sessionId, const db::CharRow& row, TimePoint now) {
+entt::entity World::spawn(uint32_t sessionId, const db::CharRow& row, TimePoint now,
+                          const std::optional<proto::ChatServer>& chat) {
     now_ = now;
     uint16_t map = row.mapId == 0 ? rules_.startMap : row.mapId; // 0: saved before maps (migration 003)
     proto::Vec3 pos = row.pos;
@@ -231,7 +232,8 @@ entt::entity World::spawn(uint32_t sessionId, const db::CharRow& row, TimePoint 
     if (const float ground = *maps_.ground(map, pos.x, pos.z); pos.y < ground - rules_.move.groundTolerance)
         pos.y = ground; // saved under the ground (heights edited since): onto it
     pos.y = std::clamp(pos.y, rules_.move.minY, rules_.move.maxY);
-    const entt::entity e = (ctx ? *ctx : context(map)).spawn(sessionId, row, pos, heading, now);
+    const entt::entity e = (ctx ? *ctx : context(map)).spawn(sessionId, row, pos, heading, now, chat);
+    shared_.sessions[e] = sessionId;
     serial(false);
     return e;
 }
@@ -249,6 +251,7 @@ MapContext& World::login_layer(const db::CharRow& row, uint16_t map) {
 void World::despawn(entt::entity e) {
     if (MapContext* ctx = find(e)) {
         ctx->despawn(e);
+        shared_.sessions.erase(e);
         serial(false);
     }
 }

@@ -43,7 +43,8 @@ only the send functions (and <code>chthonic.reply</code>) put anything on the ne
   <code>Despawn</code>; sends from <code>onEnter</code> go out on the next tick.</li>
 <li><strong>Targets:</strong> a bad id (not a whole number from 0 to 2^32-1) raises <code>chthonic.sendTo: invalid entity id &lt;value&gt;</code>. A
   valid id whose character or NPC is not in the world when the events go out (it left meanwhile) sends nothing, and
-  so does one on another map: <code>chthonic.sendTo</code>, <code>sendNearby</code> and <code>reply</code> reach the sender's map only. <code>chthonic.broadcast</code>
+  so does one on another map: <code>chthonic.sendTo</code> and <code>sendNearby</code> reach the sender's map only, while <code>reply</code> reaches the
+  requester on any map. <code>chthonic.broadcast</code>
   reaches every map: its own map's players in call order, the other maps' at the end of the tick.</li>
 <li><strong>Size:</strong> an event whose frame would pass 65535 bytes raises <code>chthonic.sendTo: event "&lt;name&gt;" is too large to send</code> at
   the call.</li>
