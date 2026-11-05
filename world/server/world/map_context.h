@@ -28,7 +28,7 @@ struct WorldRules {
     uint16_t startMap = 1; // START_MAP: new characters, NPCs without a map, and the fallback for a bad saved map
     size_t chatRateCount = 5;
     Millis chatRateWindow{10000};
-    size_t clientEventRateCount = 10; // chthonic.world.send events per character per window; the rest are dropped
+    size_t clientEventRateCount = 10; // ClientEvents per character per window; the rest are dropped
     Millis clientEventRateWindow{1000};
     Millis saveInterval{60000};
     float tickSeconds = 0.05f; // dt passed to Lua update
@@ -84,6 +84,9 @@ struct Shared {
     // Every live layer of a layered world map by (map, instanceId; 0: the base): its players as of the last serial
     // point. Written and read as copies.
     std::map<std::pair<uint16_t, uint32_t>, size_t> layers;
+    // Every character in the world (any context): its session, for chthonic.reply after a map change. Written by
+    // World::spawn / despawn only, never during an update, so a context reads it without a lock.
+    std::unordered_map<entt::entity, uint32_t> sessions;
 
 private:
     std::mutex mu_;
@@ -199,7 +202,8 @@ public:
     double take_update_ms() { return std::exchange(updateMs_, 0); }
 
     // As World's, for an entity of (or a position on) this map. spawn: pos already checked (on the map, on its ground).
-    entt::entity spawn(uint32_t sessionId, const db::CharRow& row, proto::Vec3 pos, float heading, TimePoint now);
+    entt::entity spawn(uint32_t sessionId, const db::CharRow& row, proto::Vec3 pos, float heading, TimePoint now,
+                       const std::optional<proto::ChatServer>& chat = std::nullopt);
     void despawn(entt::entity e);
     // id: one Shared already counts (a queued Create), else a new one.
     entt::entity create_npc(std::string name, std::string templateName, std::optional<proto::Vec3> pos, float heading,

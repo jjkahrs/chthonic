@@ -292,13 +292,13 @@ void GameServer::handle_lobby(Client& c, proto::Message&& m) {
                 if (!cl) return;
                 if (!row) return char_error(*cl, proto::Opcode::EnterWorld, proto::Code::service_unavailable);
                 if (!*row) return char_error(*cl, proto::Opcode::EnterWorld, proto::Code::not_found);
-                cl->entity = world_.spawn(sid, **row, SteadyClock::now());
+                std::optional<proto::ChatServer> chat; // sent right after EnterWorldOk
+                if (!cfg_.chatPublicHost.empty()) chat = proto::ChatServer{cfg_.chatPublicHost, cfg_.chatPublicPort};
+                cl->entity = world_.spawn(sid, **row, SteadyClock::now(), chat);
                 cl->phase = Phase::world;
                 cl->charId = (*row)->id;
                 cl->charName = (*row)->name;
                 cl->reportedMap = world_.map_of(cl->entity);
-                if (!cfg_.chatPublicHost.empty())
-                    cl->session->send(proto::ChatServer{cfg_.chatPublicHost, cfg_.chatPublicPort});
                 if (chatLink_) chatLink_->char_online({cl->accountId, cl->charId, cl->charName, cl->reportedMap});
                 log::info("entered world", {{"account", cl->accountId}, {"char", (*row)->id},
                                             {"population", world_.population()}});

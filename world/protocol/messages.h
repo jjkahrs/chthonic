@@ -247,9 +247,10 @@ struct Say {
     bool operator==(const Say&) const = default;
 };
 
-// A named event for the server's Lua (chthonic.world.send; docs/world/protocol.html#client-events). Never S->C.
+// A named event for the server's Lua (docs/world/protocol.html#client-events). Never S->C.
 // The server re-checks both limits: the name is untrusted, the JSON is parsed and must be an object.
-// requestId: 0 for chthonic.world.send; otherwise chthonic.world.request's, which the server's Lua answers with one Reply.
+// requestId: 0 for a plain event (no answer); otherwise a request, which the server's Lua answers with one Reply (or the
+// server with Reply{requestId, false, "rate_limited"} if it drops it for the rate limit).
 constexpr size_t kClientEventNameMax = 32;
 constexpr size_t kClientEventJsonMax = 1024;
 struct ClientEvent {
@@ -521,8 +522,9 @@ struct Reply {
 
 // --- chat service (docs/chat/protocol.html) ---
 
-// Where the realm's chat service listens: sent by the world server right after EnterWorldOk (CHAT_PUBLIC_HOST /
-// CHAT_PUBLIC_PORT); not sent when it has none. The client opens a second TLS connection there with the same token.
+// Where the realm's chat service listens: sent by the world server as the next message after EnterWorldOk, before any
+// other (CHAT_PUBLIC_HOST / CHAT_PUBLIC_PORT); not sent when it has none. The client opens a second TLS connection
+// there with the same token.
 struct ChatServer {
     static constexpr Opcode op = Opcode::ChatServer;
     std::string host;

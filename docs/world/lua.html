@@ -196,7 +196,7 @@ and a system reads it with <code>chthonic.definitions(folder)</code>. The server
 <li><strong>Runaway scripts:</strong> a callback that runs longer than 2 s raises an error, so an infinite loop disables its system instead of hanging the server.</li>
 <li><strong>Runtime errors:</strong> an error in any callback is logged as <code>Lua system disabled</code>, with the system, the callback and <code>path:line</code>. That system is then disabled until restart; the server and the other systems keep running.</li>
 </ul>
-<p><strong>The <code>chthonic.*</code> API</strong> is meant to match the client's semantics and error messages, so a script behaves the same on client and server:</p>
+<p><strong>The <code>chthonic.*</code> API</strong> has fixed semantics and error messages, so a script written against them behaves the same wherever it runs:</p>
 <table>
 <thead>
 <tr>
@@ -438,10 +438,10 @@ end)
 </code></pre>
 <ul>
 <li><strong>Payload:</strong> <code>{entity = &lt;sender's character entity id&gt;, data = &lt;the JSON object as a table&gt;}</code>, plus <code>requestId</code> when the client sent a non-zero one. <code>entity</code> is set by the server and always the sender.</li>
-<li><strong>Requests:</strong> <code>chthonic.reply(e.entity, e.requestId, true, data)</code> (or <code>false, "reason"</code>) answers with a <code>Reply</code> to the sender alone (<a href="protocol.html#client-events">protocol</a>). The client waits for it, so reply to every request a handler accepts or refuses.</li>
+<li><strong>Requests:</strong> <code>chthonic.reply(e.entity, e.requestId, true, data)</code> (or <code>false, "reason"</code>) answers with a <code>Reply</code> to the sender alone, on whatever map it is on by then (<a href="protocol.html#client-events">protocol</a>). The client waits for it, so reply to every request a handler accepts or refuses.</li>
 <li><strong>Untrusted:</strong> <code>data</code> is whatever the client sent. Check every field's type and every claim (range, cooldown, ownership) before acting on it (<a href="security.html#client-events">Security, Client events</a>).</li>
 <li><strong>Timing:</strong> published after chat (tick order step 5) and delivered by the event drain right after that tick's Lua <code>update</code>, in arrival order.</li>
-<li><strong>Limits:</strong> name 1–32 characters of <code>a-z0-9._</code>, at most 1 KB of JSON, 10 per second per character; the rest are dropped (<a href="protocol.html#client-events">protocol</a>).</li>
+<li><strong>Limits:</strong> name 1–32 characters of <code>a-z0-9._</code>, at most 1 KB of JSON, 10 per second per character; the rest are dropped, a request among them answered <code>Reply{requestId, 0, "rate_limited"}</code> by the server (<a href="protocol.html#client-events">protocol</a>).</li>
 </ul>
 <h2 id="persistence-1">Persistence</h2>
 <ul>

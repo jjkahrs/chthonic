@@ -78,9 +78,11 @@ public:
     // Places the character (at its saved map and position, lifted onto the ground if it is under it, or START_MAP's
     // spawn if that map is not loaded or the position is off it) in that map's context (on an instance map: the saved
     // copy if it is live and has room, else the map's exit, logged; on a layered map: login_layer), sends
-    // EnterWorldOk, wakes the tiles around it (spawning the NPCs of those loading now, so onEnter sees them), restores
-    // its persisted Lua components and runs onEnter. Other players get Spawn on the next tick.
-    entt::entity spawn(uint32_t sessionId, const db::CharRow& row, TimePoint now);
+    // EnterWorldOk (then chat, if given, before any other message), wakes the tiles around it (spawning the NPCs of
+    // those loading now, so onEnter sees them), restores its persisted Lua components and runs onEnter. Other players
+    // get Spawn on the next tick.
+    entt::entity spawn(uint32_t sessionId, const db::CharRow& row, TimePoint now,
+                       const std::optional<proto::ChatServer>& chat = std::nullopt);
     // Runs onLeave and sends the client events it queued, saves the character, sends Despawn to everyone who could
     // see it, removes it.
     void despawn(entt::entity e);

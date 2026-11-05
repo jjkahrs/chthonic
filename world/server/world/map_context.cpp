@@ -207,11 +207,11 @@ void MapContext::send_lua_client_events() {
     std::vector<lua::ClientEvent> events = lua_.take_client_events();
     for (const auto& event : events)
         if (event.to == lua::ClientEvent::To::all) outbox_.broadcasts.push_back(event);
-    client_event_system(reg_, std::move(events), send_, sendMany_);
+    client_event_system(reg_, std::move(events), send_, sendMany_, shared_.sessions);
 }
 
 void MapContext::send_client_events(std::vector<lua::ClientEvent> events) {
-    client_event_system(reg_, std::move(events), send_, sendMany_);
+    client_event_system(reg_, std::move(events), send_, sendMany_, shared_.sessions);
 }
 
 entt::entity MapContext::create(entt::entity id) {
@@ -225,7 +225,8 @@ void MapContext::destroy(entt::entity e) {
     ids_.release(e);
 }
 
-entt::entity MapContext::spawn(uint32_t sessionId, const db::CharRow& row, proto::Vec3 pos, float heading, TimePoint now) {
+entt::entity MapContext::spawn(uint32_t sessionId, const db::CharRow& row, proto::Vec3 pos, float heading, TimePoint now,
+                              const std::optional<proto::ChatServer>& chat) {
     now_ = now;
     const auto e = create(ids_.generate(shared_));
     reg_.emplace<SessionLink>(e, sessionId);
@@ -248,6 +249,7 @@ entt::entity MapContext::spawn(uint32_t sessionId, const db::CharRow& row, proto
     set_area(reg_, maps_, lua_.bus(), e);
     ++population_;
     send_(sessionId, proto::EnterWorldOk{wire_id(e), map_, pos, heading});
+    if (chat) send_(sessionId, *chat); // right after EnterWorldOk, before anything onEnter causes
     activation_enter(reg_, activation_, spawner_, grid_, e);
     spawn_due(now);
     lua::restore_components(reg_, e, defs_, row.components, [&](const std::string& fix) {
@@ -550,7 +552,7 @@ void MapContext::tick_rest(TimePoint now, const Mutes& mutes, SysTime wallNow) {
     now_ = now;
     aoi_system(reg_, grid_, send_);
     chat_system(reg_, rules_.chat, mutes, send_, sendMany_, now, wallNow);
-    client_event_in_system(reg_, lua_.bus(), now); // delivered by the drain after this tick's Lua update
+    client_event_in_system(reg_, lua_.bus(), send_, now); // delivered by the drain after this tick's Lua update
     interact_system(reg_, maps_, lua_.bus());      // likewise
     spawn_due(now);
     lua_.update(rules_.tickSeconds);

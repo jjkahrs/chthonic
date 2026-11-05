@@ -104,10 +104,10 @@ void replication_system(entt::registry& reg, const Send& send);
 // on its map within rules.yellRadius.
 void chat_system(entt::registry& reg, const ChatRules& rules, const Mutes& mutes, const Send& send,
                  const SendMany& sendMany, TimePoint now, SysTime wallNow);
-// Publishes each character's ClientEvents (chthonic.world.send) on the Lua bus as "client.<name>" {entity, data}, in
-// arrival order, plus requestId for a chthonic.world.request; past the character's ClientEventLimit they are dropped and
-// counted (a dropped request is never answered: the client times it out).
-void client_event_in_system(entt::registry& reg, EventBus& bus, TimePoint now);
+// Publishes each character's ClientEvents on the Lua bus as "client.<name>" {entity, data}, in arrival order, plus
+// requestId for a ClientEvent with a non-zero requestId; past the character's ClientEventLimit they are dropped and
+// counted, and a dropped one with a requestId is answered at once with Reply{requestId, false, "rate_limited"}.
+void client_event_in_system(entt::registry& reg, EventBus& bus, const Send& send, TimePoint now);
 // Each player's Interacts (docs/world/events.html#interactables): one on the player's map (Maps::interactable)
 // with the player within its range of the shape's edge (map::footprint_distance, horizontal) publishes the object's
 // event {entity, map, object, data (absent if the file has none)}. Anything else is dropped with a debug log.
@@ -119,9 +119,10 @@ void component_replication_system(entt::registry& reg, const lua::Defs& defs, co
 // Sends the client events Lua queued (chthonic.sendTo/sendNearby/broadcast) as ServerEvent, in call order. The audience is
 // taken now: owner = the character's session, nearby = it and every session that sees it, all = every player. A
 // target no longer in the world is skipped, and an NPC target has no client of its own. A chthonic.reply goes as Reply to
-// its entity's session alone.
+// its entity's session alone, looked up in sessions (Shared::sessions: on any map), so it reaches a requester who
+// changed maps since; none if the character left the world.
 void client_event_system(entt::registry& reg, std::vector<lua::ClientEvent> events, const Send& send,
-                         const SendMany& sendMany);
+                         const SendMany& sendMany, const std::unordered_map<entt::entity, uint32_t>& sessions);
 void save_system(entt::registry& reg, const lua::Defs& defs, const Save& save, Millis interval, TimePoint now);
 void end_of_tick_system(entt::registry& reg);
 

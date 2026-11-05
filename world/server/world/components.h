@@ -68,7 +68,7 @@ struct ChatLimit {
 struct PendingClientEvent {
     std::string name;
     nlohmann::json data;
-    uint32_t requestId = 0; // chthonic.world.request's, 0 for chthonic.world.send
+    uint32_t requestId = 0; // the ClientEvent's; 0: a plain event, no Reply
 };
 struct PendingClientEvents {
     std::vector<PendingClientEvent> events;

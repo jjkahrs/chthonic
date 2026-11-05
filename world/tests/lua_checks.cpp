@@ -1348,6 +1348,114 @@ void checkReply() {
           "chthonic.reply: bad arguments raise " + errors.dump());
 }
 
+// A chthonic.reply reaches the requester wherever the character is now (here: transferred to map 2 before the reply);
+// one for a character that left the world sends nothing.
+void checkReplyAfterMapChange() {
+    LuaRoot r;
+    r.write("systems/later.lua", R"(local pending = {}
+return {
+    init = function()
+        chthonic.subscribe("client.ask", function(e)
+            pending[#pending + 1] = {e.entity, e.requestId}
+            if e.data.go then chthonic.transfer(e.entity, 2, {x = 300, y = 0, z = 310}) end
+        end)
+    end,
+    update = function(dt)
+        for _, p in ipairs(pending) do chthonic.reply(p[1], p[2], true, {late = true}) end
+        pending = {}
+    end,
+})");
+    TestWorld w({});
+    check(w.world.load_scripts(r.root).empty(), "reply after map change: loads");
+    const auto a = w.spawn(1, 93, "Alice", 1000, 1000);
+    const auto b = w.spawn(2, 94, "Bob", 1010, 1000);
+    w.sent.clear();
+    w.world.push_client_event(a, "ask", Json{{"go", true}}, 21);
+    w.world.push_client_event(b, "ask", Json::object(), 22);
+    w.world.tick(T0); // handled after update: Alice transferred at the serial point, both replies still pending
+    w.world.despawn(b);
+    w.world.tick(T0 + std::chrono::milliseconds(50)); // map 1's update replies
+    check(w.world.map_of(a) == 2, "reply after map change: Alice is on map 2");
+    check(w.sent.of<proto::Reply>(1) == std::vector<proto::Reply>{{21, true, R"({"late":true})"}},
+          "reply after map change: the Reply reaches the requester on another map");
+    check(w.sent.of<proto::Reply>(2).empty(), "reply after map change: a character that left the world gets nothing");
+}
+
+// A ClientEvent dropped by the rate limit: Reply{requestId, false, "rate_limited"} if it has a requestId, else nothing.
+void checkReplyRateLimited() {
+    TestWorld w({});
+    const auto a = w.spawn(1, 95, "Alice", 1000, 1000);
+    w.sent.clear();
+    for (int i = 0; i < 10; ++i) w.world.push_client_event(a, "x", Json::object()); // the window's 10
+    w.world.push_client_event(a, "x", Json::object(), 77);
+    w.world.push_client_event(a, "x", Json::object());
+    w.world.tick(T0);
+    check(w.sent.of<proto::Reply>(1) == std::vector<proto::Reply>{{77, false, R"("rate_limited")"}},
+          "rate-dropped request: one Reply{77, false, \"rate_limited\"}, none for requestId 0");
+    check(w.world.registry().get<world::ClientEventLimit>(a).dropped == 2, "rate-dropped request: still counted");
+}
+
+// ChatServer is the message right after EnterWorldOk, before the MapChange of an onEnter transfer; none without one.
+void checkChatServerOrder() {
+    LuaRoot r;
+    r.write("systems/away.lua", R"(return {
+    onEnter = function(e) chthonic.transfer(e, 2, {x = 300, y = 0, z = 310}) end,
+    update = function(dt) end,
+})");
+    TestWorld w({});
+    check(w.world.load_scripts(r.root).empty(), "chat server order: loads");
+    w.world.spawn(1, {96, 1, "Alice", 1, {1000, 0, 1000}, 0.5f, "", {}}, T0, proto::ChatServer{"chat.example.com", 7778});
+    const auto& got = w.sent.bySession[1];
+    check(got.size() >= 3 && std::holds_alternative<proto::EnterWorldOk>(got[0]) &&
+              std::get_if<proto::ChatServer>(&got[1]) &&
+              *std::get_if<proto::ChatServer>(&got[1]) == proto::ChatServer{"chat.example.com", 7778} &&
+              std::holds_alternative<proto::MapChange>(got[2]),
+          "chat server order: EnterWorldOk, ChatServer, then the onEnter MapChange");
+    w.world.spawn(2, {97, 1, "Bob", 1, {1000, 0, 1000}, 0.5f, "", {}}, T0);
+    check(w.sent.of<proto::ChatServer>(2).empty() && std::holds_alternative<proto::EnterWorldOk>(w.sent.bySession[2][0]),
+          "chat server order: none without a chat host");
+}
+
+// Moves whose y validate_move adjusted (lifted onto the ground, clamped to MIN_Y/MAX_Y) are corrected like a rejection:
+// Correction{adjusted pos, its seq, epoch + 1}, the rest of the batch dropped. y unchanged: no Correction.
+void checkMoveYAdjusted() {
+    {
+        TestWorld w({});
+        const auto a = w.spawn(1, 42, "Alice", 1000, 1000);
+        w.world.tick(T0);
+        w.sent.clear();
+        const auto& tf = w.world.registry().get<world::Transform>(a);
+        w.world.push_move(a, {{1001, -1, 1000}, 0, 0, 1, 0}); // 1 m under the flat ground (tolerance 0.5)
+        w.world.push_move(a, {{1002, 0, 1000}, 0, 0, 2, 0});
+        w.world.tick(T0 + std::chrono::milliseconds(500));
+        const auto corr = w.sent.of<proto::Correction>(1);
+        check(corr == std::vector<proto::Correction>{{{1001, 0, 1000}, 1, 1}} && tf.pos == proto::Vec3{1001, 0, 1000},
+              "y adjusted: lifted onto the ground -> Correction{lifted pos, its seq, epoch 1}, the rest of the batch dropped");
+    }
+    world::WorldRules rules;
+    rules.move.minY = 1;
+    rules.move.maxY = 2;
+    TestWorld w({}, rules);
+    const auto a = w.spawn(1, 43, "Alice", 1000, 1000); // spawned at y 1 (MIN_Y)
+    w.world.tick(T0);
+    w.sent.clear();
+    const auto& tf = w.world.registry().get<world::Transform>(a);
+    w.world.push_move(a, {{1001, 1.5f, 1000}, 0, 0, 1, 0});
+    w.world.tick(T0 + std::chrono::milliseconds(500));
+    check(w.sent.of<proto::Correction>(1).empty() && tf.pos.y == 1.5f, "y adjusted: y within the bounds, no Correction");
+    w.world.push_move(a, {{1002, 3, 1000}, 0, 0, 2, 0});
+    w.world.push_move(a, {{1003, 1.5f, 1000}, 0, 0, 3, 0});
+    w.world.tick(T0 + std::chrono::milliseconds(1000));
+    auto corr = w.sent.of<proto::Correction>(1);
+    check(corr == std::vector<proto::Correction>{{{1002, 2, 1000}, 2, 1}} && tf.pos.x == 1002,
+          "y adjusted: clamped to MAX_Y -> Correction{clamped pos, its seq, epoch 1}, the rest of the batch dropped");
+    w.sent.clear();
+    w.world.push_move(a, {{1003, 0.2f, 1000}, 0, 0, 4, 1});
+    w.world.tick(T0 + std::chrono::milliseconds(1500));
+    corr = w.sent.of<proto::Correction>(1);
+    check(corr == std::vector<proto::Correction>{{{1003, 1, 1000}, 4, 2}}, "y adjusted: clamped to MIN_Y -> Correction, epoch 2");
+}
+
 // chthonic.sendTo / sendNearby / broadcast: audiences, call order, after component replication, before Despawn.
 void checkClientEvents() {
     LuaRoot r;
@@ -3301,6 +3409,11 @@ void checkMoveEpochs() {
     corr = w.sent.of<proto::Correction>(1);
     check(corr.size() == 1 && corr[0].ackSeq == 7 && corr[0].epoch == 2 && corr[0].pos.x == 1003 && ms.epoch == 2,
           "epochs: the next rejection -> ackSeq 7, epoch 2");
+    w.sent.clear();
+    move(1004, 9, 3); // an epoch the server has not started: dropped like an older one
+    w.world.tick(T0 + std::chrono::milliseconds(2500));
+    check(w.sent.of<proto::Correction>(1).empty() && tf.pos.x == 1003 && ms.epoch == 2,
+          "epochs: a future-epoch move dropped silently, not applied");
 }
 
 // chthonic.setMovable: a locked character's moves are all refused with one Correction a tick; unlocked, they work again.
@@ -4303,12 +4416,15 @@ void checkGround() {
     w.world.tick(T0);
     check_lua_expectations("ground lua", "ground lua done");
 
-    // Moves: under the ground lifted, rising into the air corrected, falling accepted.
+    // Moves: under the ground lifted (and corrected), rising into the air corrected, falling accepted.
     w.sent.clear();
     w.move(under, {{101, ramp(101, 100) - 5, 100}, 0, 0});
     w.world.tick(at(1));
-    check(w.sent.of<proto::Correction>(1).empty() && on_ramp(reg.get<world::Transform>(under).pos.y, 101, 100),
-          "move 5 m under the ground: accepted, lifted onto it");
+    const auto lift = w.sent.of<proto::Correction>(1);
+    check(lift.size() == 1 && lift[0].pos == reg.get<world::Transform>(under).pos &&
+              on_ramp(reg.get<world::Transform>(under).pos.y, 101, 100),
+          "move 5 m under the ground: accepted, lifted onto it, Correction with the lifted pos");
+    w.sent.clear();
     w.move(under, {{102, ramp(102, 100) + 10, 100}, 0, 0});
     w.world.tick(at(2));
     const auto fly = w.sent.of<proto::Correction>(1);
@@ -5966,6 +6082,9 @@ int lua_checks(int& checks) {
     checkLuaEventHooks();
     checkClientEvents();
     checkReply();
+    checkReplyAfterMapChange();
+    checkReplyRateLimited();
+    checkChatServerOrder();
     checkLuaLogging();
     checkFsmDefinitions();
     checkFsmRules();
@@ -5992,6 +6111,7 @@ int lua_checks(int& checks) {
     checkTileActivation();
     checkClientEventsIn();
     checkMoveEpochs();
+    checkMoveYAdjusted();
     checkMovableAndMapSpawn();
     checkNpcDefinitionErrors();
     checkItemsAndLoot();

@@ -1021,7 +1021,8 @@ struct Runtime::Impl {
             queue_client_event(L, "chthonic.broadcast", ClientEvent::To::all, 0, name, value);
         });
         // chthonic.reply(entity, requestId, ok, dataOrReason): answers a "client.<name>" event's requestId (a client's
-        // chthonic.world.request) to entity's owner: ok true with data (a table, nil: {}), false with the reason (a string).
+        // ClientEvent with requestId != 0) to entity's owner: ok true with data (a table, nil: {}), false with the
+        // reason (a string).
         api.set_function("reply", [this](sol::this_state L, const sol::object& id, const sol::object& requestId,
                                          const sol::object& ok, const sol::object& value) {
             const uint32_t entity = target(L, "chthonic.reply", id);
