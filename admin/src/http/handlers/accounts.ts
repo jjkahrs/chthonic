@@ -89,7 +89,8 @@ export function accountRoutes(deps: {
       const before = await proxy<Account>(ctx, `/${id}`);
       ctx.note.before = { role: before.role };
       const account = await proxy(ctx, `/${id}/role`, { method: 'PUT', body: { role } });
-      // Any role change ends the account's game sessions, so a demoted GM loses GM powers in the world at once.
+      // Any role change ends the account's game sessions, so a demoted GM loses GM powers in the world at once;
+      // its writes here re-check auth (requireSession), so it loses them in this app within RECHECK_MS.
       const kicks = role === before.role ? null : await realms.kickEverywhere(ctx, id, 'role changed');
       ctx.note.after = { role, kicks };
       return { body: { account, kicks } };

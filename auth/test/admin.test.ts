@@ -132,6 +132,23 @@ describe('roles', () => {
     expect((await ctx.api().get('/v1/me').set(bearer(accessToken))).body.role).toBe('gm');
   });
 
+  it('/v1/me reflects the current role, ban and deletion, not the claims of an already issued token', async () => {
+    const { accessToken } = await login(ctx, PLAYER);
+    const me = () => ctx.api().get('/v1/me').set(bearer(accessToken));
+    await asAdmin().put(`/v1/admin/accounts/${playerId}/role`, { role: 'gm' });
+    expect((await me()).body.role).toBe('gm');
+    await asAdmin().put(`/v1/admin/accounts/${playerId}/role`, { role: 'player' });
+    expect((await me()).body.role).toBe('player');
+
+    await asAdmin().post(`/v1/admin/accounts/${playerId}/ban`, { reason: 'Rogue' });
+    expectError(await me(), 401, 'unauthorized');
+    await asAdmin().delete(`/v1/admin/accounts/${playerId}/ban`);
+    expect((await me()).status).toBe(200);
+
+    expect((await asAdmin().delete(`/v1/admin/accounts/${playerId}`)).status).toBe(204);
+    expectError(await me(), 401, 'unauthorized');
+  });
+
   it('a promoted admin can use admin routes with a fresh token', async () => {
     await asAdmin().put(`/v1/admin/accounts/${playerId}/role`, { role: 'admin' });
     const { accessToken } = await login(ctx, PLAYER);

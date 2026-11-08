@@ -86,7 +86,7 @@
 <td>GET</td>
 <td><code>/v1/me</code></td>
 <td>bearer</td>
-<td>id, email, role, emailVerified, createdAt</td>
+<td>id, email, role, emailVerified, createdAt, read from the database at request time (the current role, not the token's). 401 <code>unauthorized</code> once the account is deleted or has an active ban. A revoked session is not detected (access tokens carry no session id)</td>
 </tr>
 <tr>
 <td>GET</td>
@@ -175,7 +175,7 @@
 </tbody>
 </table>
 <h2 id="roles">Roles</h2>
-<p>Everything under <code>/v1/admin</code> needs an access token with role <code>admin</code>, except four routes that also accept <code>gm</code>: list accounts, account detail, ban and unban. A GM may use them only on accounts whose role is <code>player</code>; any other target gives 403 <code>forbidden</code>, and the account list only ever returns players to a GM. Access tokens already issued keep working until they expire (at most 15 minutes) after a ban, delete, role change or session revoke.</p>
+<p>Everything under <code>/v1/admin</code> needs an access token with role <code>admin</code>, except four routes that also accept <code>gm</code>: list accounts, account detail, ban and unban. A GM may use them only on accounts whose role is <code>player</code>; any other target gives 403 <code>forbidden</code>, and the account list only ever returns players to a GM. Access tokens already issued keep working on these routes until they expire (at most 15 minutes) after a ban, delete, role change or session revoke; <code>/v1/me</code> always reflects the current role, ban and deletion.</p>
 <h2 id="errors">Errors</h2>
 <p>Every error has this shape: <code>{"error":{"code":"snake_case","message":"…","details":…}}</code>. <code>details</code> is present only for <code>validation_error</code> (a list of <code>{path,message}</code>), <code>account_banned</code> (<code>{reason,expiresAt}</code>) and <code>account_locked</code> (<code>{lockedUntil}</code>). Responses never include stack traces or SQL.</p>
 <table>

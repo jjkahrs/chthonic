@@ -316,9 +316,11 @@ export function createAuthService(deps: {
       });
     },
 
+    /** Current DB state, not the token's claims: the admin app re-checks staff with this. */
     async me(accountId: number): Promise<AccountView> {
       const account = await findAccountById(pool, accountId);
       if (!account) throw unauthorized();
+      if (await findActiveBan(pool, accountId, clock.now())) throw unauthorized('This account is banned');
       return toAccountView(account);
     },
   };
