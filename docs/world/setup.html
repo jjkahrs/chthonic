@@ -39,17 +39,17 @@ world refuses to start without a map. Set <code>MAPS_DIR</code> to a full maps f
 </tr>
 <tr>
 <td><code>auth</code></td>
-<td>3100</td>
-<td><code>auth</code>, unmodified. <strong><code>TRUST_PROXY=true</code>, for testing only</strong> (see Security)</td>
+<td>3100 (<code>127.0.0.1</code> unless <code>AUTH_BIND</code>)</td>
+<td><code>auth</code>, unmodified. <strong><code>TRUST_PROXY=true</code>, for testing only</strong> (see Security). Loopback only by default; <code>AUTH_BIND=0.0.0.0</code> exposes it to game clients on other machines. Refuses to start while <code>SEED_ADMIN_PASSWORD</code> is a <code>change-me</code> placeholder</td>
 </tr>
 <tr>
 <td><code>mysql</code></td>
-<td>3307</td>
+<td>3307 (<code>127.0.0.1</code> only)</td>
 <td>One MySQL 8.4 for both services (volume <code>mysql-data</code>)</td>
 </tr>
 <tr>
 <td><code>mailpit</code></td>
-<td>8026</td>
+<td>8026 (<code>127.0.0.1</code> only)</td>
 <td>Verification emails. The bots read them through the API</td>
 </tr>
 </tbody>

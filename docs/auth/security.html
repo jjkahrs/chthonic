@@ -45,6 +45,8 @@
 </ul>
 </li>
 <li><strong>Logs</strong> never contain passwords, tokens, request bodies or SQL parameters.</li>
+<li><strong>Published ports.</strong> The compose stacks publish MySQL and Mailpit on <code>127.0.0.1</code> only: Mailpit has no authentication and shows every reset link, so anyone who reaches it can take over any account. Auth (including <code>/v1/admin</code>) is published on <code>127.0.0.1</code> unless <code>AUTH_BIND=0.0.0.0</code> is set.</li>
+<li><strong>No placeholder seed admin.</strong> Auth refuses to start while <code>SEED_ADMIN_PASSWORD</code> starts with <code>change-me</code> (the <code>.env.example</code> value). Changing <code>.env</code> does not change an admin that was already seeded: change that account's password through forgot-password.</li>
 </ul>
 </main>
 </div>

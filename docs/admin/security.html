@@ -28,7 +28,7 @@
 <li>TLS to each world server's <a href="../world/security.html#admin-port">admin port</a>, verified against <code>WORLD_ADMIN_CA_FILE</code>. The first message carries <code>WORLD_ADMIN_SECRET</code>, which the world compares in constant time. One connection per request.</li>
 <li>The secret lives only in the environment: never stored, logged or returned.</li>
 <li>Realm admin hosts and ports are admin-only data. GMs never receive them: their requests use the server-side copy in <code>chthonic_admin.realm_endpoints</code> (see <a href="setup.html#first-admin-sign-in">Setup</a>).</li>
-<li>Never publish the world admin port or the admin app to the internet. Compose keeps 7780 on the compose network and binds 3200 to <code>127.0.0.1</code>.</li>
+<li>Never publish the world admin port or the admin app to the internet. Compose keeps 7780 on the compose network and binds 3200 to <code>127.0.0.1</code>. Auth (whose <code>/v1/admin</code> the admin app calls) is on <code>127.0.0.1:3100</code> unless <code>AUTH_BIND</code> opens it; MySQL and Mailpit are loopback only.</li>
 </ul>
 <h2 id="least-privilege">Least privilege</h2>
 <ul>

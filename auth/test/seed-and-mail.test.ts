@@ -36,6 +36,19 @@ describe('config', () => {
       /Invalid configuration:[\s\S]*DB_HOST[\s\S]*SMTP_PORT[\s\S]*SEED_ADMIN_PASSWORD/,
     );
   });
+
+  it('refuses the .env.example placeholder seed password, in any case', () => {
+    const email = 'admin@chthonic.local';
+    for (const pw of ['change-me-admin-password', ' CHANGE-ME-xyz12345 ']) {
+      expect(() => testConfig({ SEED_ADMIN_EMAIL: email, SEED_ADMIN_PASSWORD: pw })).toThrow(
+        /Invalid configuration:[\s\S]*SEED_ADMIN_PASSWORD: is the \.env\.example placeholder/,
+      );
+    }
+    expect(testConfig({ SEED_ADMIN_EMAIL: email, SEED_ADMIN_PASSWORD: 'a real admin password' }).SEED_ADMIN_PASSWORD).toBe(
+      'a real admin password',
+    );
+    expect(testConfig({ SEED_ADMIN_EMAIL: '', SEED_ADMIN_PASSWORD: '' }).SEED_ADMIN_PASSWORD).toBeUndefined();
+  });
 });
 
 interface MailpitList {
