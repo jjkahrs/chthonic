@@ -75,7 +75,7 @@ private:
         uint16_t map = 0;
         uint32_t link = 0;
         uint32_t session = 0; // its chat client, 0 if none
-        proto::Role role = proto::Role::player;
+        std::optional<proto::Role> role; // from its chat client's token; unknown until one binds
         std::set<size_t> channels;   // indices into rules_.channels
         std::set<std::string> ignored; // name_key()s
         WindowLimiter limiter;

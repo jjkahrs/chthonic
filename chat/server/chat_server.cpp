@@ -77,6 +77,8 @@ void ChatServer::accept(asio::ip::tcp::acceptor& acceptor, bool link) {
         if (shuttingDown_ || !acceptor.is_open()) return;
         if (!ec) {
             socket.set_option(asio::ip::tcp::no_delay(true), ec);
+            const auto peer = socket.remote_endpoint(ec);
+            std::string ip = ec ? std::string("unknown") : peer.address().to_string();
             const uint32_t id = nextSessionId_++;
             auto session = std::make_shared<net::Session>(
                 id, std::move(socket), tls_, link ? linkLimits_ : clientLimits_,
@@ -88,10 +90,11 @@ void ChatServer::accept(asio::ip::tcp::acceptor& acceptor, bool link) {
             if (link) {
                 links_[id].session = session;
                 session->start();
-            } else if (clients_.size() >= cfg_.maxConnections) {
+            } else if (clients_.size() >= cfg_.maxConnections || !preauth_.try_add(ip, cfg_.maxPreauthPerIp)) {
                 session->start(proto::Code::server_full);
             } else {
                 clients_[id].session = session;
+                clients_[id].preauthIp = std::move(ip);
                 session->start();
             }
         }
@@ -156,11 +159,18 @@ void ChatServer::auth_done(uint32_t sid, const TokenResult& r) {
 void ChatServer::bind(Client& c) {
     if (c.hold) c.hold->cancel();
     c.phase = Phase::bound;
+    release_preauth(c);
     c.session->authenticated();
     c.session->send(proto::AuthOk{c.accountId, c.role});
     if (auto replaced = router_.bind(c.session->id(), c.accountId, c.role))
         if (auto old = clients_.find(*replaced); old != clients_.end()) old->second.session->disconnect(proto::Code::logged_in_elsewhere);
     log::info("chat client bound", {{"session", c.session->id()}, {"account", c.accountId}});
+}
+
+void ChatServer::release_preauth(Client& c) {
+    if (c.preauthIp.empty()) return;
+    preauth_.release(c.preauthIp);
+    c.preauthIp.clear();
 }
 
 void ChatServer::drop_sessions(const std::vector<uint32_t>& sessions) {
@@ -214,6 +224,7 @@ void ChatServer::on_link(net::Session& s, proto::Message&& m) {
 void ChatServer::on_closed(net::Session& s) {
     if (auto it = clients_.find(s.id()); it != clients_.end()) {
         if (it->second.hold) it->second.hold->cancel();
+        release_preauth(it->second);
         router_.client_closed(s.id());
         clients_.erase(it);
     } else if (auto l = links_.find(s.id()); l != links_.end()) {

@@ -4,8 +4,10 @@ import path from 'node:path';
 import express from 'express';
 import supertest from 'supertest';
 import { describe, expect, it } from 'vitest';
-import { createApp } from '../src/http/app.js';
+import { createAuthClient } from '../src/authClient.js';
+import { createApp, type AppDeps } from '../src/http/app.js';
 import { COOKIES, CSRF_HEADER, cookieWriter } from '../src/http/middleware.js';
+import { RECHECK_MS } from '../src/services/session.js';
 import { ADMIN, GM, MINUTE, PASSWORD, PLAYER, cookieFrom, expectError, testConfig, useTestApp } from './helpers.js';
 
 const ctx = useTestApp();
@@ -133,6 +135,68 @@ describe('session lifetime', () => {
     const res = await gm.get('/api/session');
     expectError(res, 401, 'unauthorized');
     expect(cookieFrom(res, COOKIES.refresh)).toBe('');
+  });
+});
+
+describe('role re-check with auth', () => {
+  // A fresh app per test, so its /v1/me cache can't hold a token from another test (the clock restarts each test).
+  async function signIn(email: string, deps: Partial<AppDeps> = {}) {
+    const saved = ctx.app;
+    ctx.app = createApp({ ...ctx.deps, ...deps });
+    try {
+      return await ctx.login(email);
+    } finally {
+      ctx.app = saved;
+    }
+  }
+  const rename = (gm: Awaited<ReturnType<typeof signIn>>, id: number, name: string) =>
+    gm.put(`/api/characters/${id}/name`, { name });
+
+  it('a GM demoted to player loses writes within RECHECK_MS and is signed out', async () => {
+    const id = await ctx.addCharacter({ accountId: ctx.ids.player, name: 'Aragorn' });
+    const gm = await signIn(GM);
+    const admin = await ctx.login(ADMIN);
+    expect((await rename(gm, id, 'Strider')).status).toBe(200);
+    expect((await admin.put(`/api/accounts/${ctx.ids.gm}/role`, { role: 'player' })).status).toBe(200);
+    ctx.clock.advance(RECHECK_MS);
+    const res = await rename(gm, id, 'Elessar');
+    expectError(res, 403, 'forbidden');
+    expect(cookieFrom(res, COOKIES.access)).toBe('');
+    expect((await ctx.character(id)).name).toBe('Strider');
+    // The token's claims still say gm, but the session state follows auth.
+    expectError(await gm.get('/api/session'), 401, 'unauthorized');
+  });
+
+  it('GET /api/session reports the current role, not the token claims', async () => {
+    const gm = await signIn(GM);
+    await ctx.authPool.query("UPDATE accounts SET role = 'admin' WHERE id = ?", [ctx.ids.gm]);
+    expect((await gm.get('/api/session')).body.role).toBe('admin');
+  });
+
+  it('a banned or deleted GM gets 401 and its cookies cleared', async () => {
+    const id = await ctx.addCharacter({ accountId: ctx.ids.player, name: 'Aragorn' });
+    const admin = await ctx.login(ADMIN);
+    const gm = await signIn(GM);
+    expect((await admin.post(`/api/accounts/${ctx.ids.gm}/ban`, { reason: 'Rogue GM' })).status).toBe(201);
+    const res = await rename(gm, id, 'Strider');
+    expectError(res, 401, 'unauthorized');
+    expect(cookieFrom(res, COOKIES.access)).toBe('');
+
+    const other = await ctx.createAccount('gm2@example.com', 'gm');
+    const gm2 = await signIn('gm2@example.com');
+    expect((await admin.delete(`/api/accounts/${other}`)).status).toBe(200);
+    expectError(await rename(gm2, id, 'Strider'), 401, 'unauthorized');
+    expect((await ctx.character(id)).name).toBe('Aragorn');
+  });
+
+  it('fails writes and the session state closed when auth is unreachable, never trusting the token role', async () => {
+    const id = await ctx.addCharacter({ accountId: ctx.ids.player, name: 'Aragorn' });
+    const dead = createAuthClient('http://127.0.0.1:1');
+    const gm = await signIn(GM, { auth: { ...ctx.deps.auth, me: dead.me } });
+    expectError(await rename(gm, id, 'Strider'), 502, 'auth_unavailable');
+    expectError(await gm.get('/api/session'), 502, 'auth_unavailable');
+    expect((await ctx.character(id)).name).toBe('Aragorn');
+    expect((await gm.get('/api/characters?limit=1')).status).toBe(200); // reads still use the token
   });
 });
 

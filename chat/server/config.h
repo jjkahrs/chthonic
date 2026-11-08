@@ -16,6 +16,7 @@ struct Config {
     uint16_t linkPort = 7779; // world servers (internal)
     std::string linkSecret;   // shared with every world server's CHAT_LINK_SECRET
     uint32_t maxConnections = 5000;
+    uint32_t maxPreauthPerIp = 8; // game clients not yet bound, per address; 0: off
     uint32_t maxFrameBytes = 4096;
     uint32_t handshakeTimeoutMs = 10000;
     uint32_t idleTimeoutMs = 60000;

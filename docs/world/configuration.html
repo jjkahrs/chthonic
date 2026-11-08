@@ -48,6 +48,11 @@
 <td>Beyond this: <code>Disconnect{server_full}</code></td>
 </tr>
 <tr>
+<td><code>MAX_PREAUTH_PER_IP</code></td>
+<td><code>8</code></td>
+<td>Game-port connections per remote address that have not authenticated yet (token verified, <code>AuthOk</code> sent); one more gets <code>Disconnect{server_full}</code>. <code>0</code>: off (the test override, <code>docker/test.override.yml</code>, since every bot connects from one address). Not applied to the admin port</td>
+</tr>
+<tr>
 <td><code>MAX_FRAME_BYTES</code></td>
 <td><code>4096</code></td>
 <td>Max frame payload</td>

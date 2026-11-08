@@ -15,14 +15,16 @@
 <ul>
 <li><strong>No account discovery.</strong><ul>
 <li>register, resend-verification and forgot-password return identical responses for every email.</li>
+<li>Registering an email that already has an <em>unverified</em> account replaces that account's password with the new one, invalidates every earlier verification link and emails a new one. Only the latest registrant's password works once the inbox owner verifies, so someone who registers a victim's email first can't have the victim verify the attacker's password. A <em>verified</em> account is unchanged; its owner gets a "sign-up attempt" email.</li>
 <li>Login returns <code>invalid_credentials</code> for both an unknown email and a wrong password. An unknown email still runs a bcrypt comparison, so both cases take about the same time.</li>
 <li>Emails are sent fire-and-forget, so the time to send an email doesn't show up in response times either.</li>
 </ul>
 </li>
 <li><strong>Login check order.</strong> Checks run in this order: lockout, password, email verified, ban. <code>email_not_verified</code> and <code>account_banned</code> are only returned once the password is correct.</li>
 <li><strong>Lockout.</strong><ul>
-<li>5 consecutive wrong passwords lock the account for 15 minutes. While it's locked, even the correct password gets <code>423 account_locked</code>.</li>
-<li>A successful login or a password reset clears the counter.</li>
+<li>Counted per account <em>and client IP</em> (the address the rate limiter uses; see <code>TRUST_PROXY</code>). 5 consecutive wrong passwords from one IP lock the account for 15 minutes <em>for that IP only</em>. While it's locked, even the correct password from that IP gets <code>423 account_locked</code> (<code>details.lockedUntil</code>); the same account still logs in from any other IP, so a stranger can't lock the owner out.</li>
+<li>A successful login clears that IP's counter. A password reset and the admin <code>unlock</code> clear every IP's counter and lock.</li>
+<li>Counters live in the <code>login_failures</code> table. A row with no active lock is deleted once it's a day old (bounded deletes on each failed login), so failures older than a day are forgotten.</li>
 <li>Trade-off: lockout only happens to accounts that exist, so a client that sends 5 wrong passwords can learn whether that email is registered.</li>
 </ul>
 </li>

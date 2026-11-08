@@ -57,7 +57,9 @@ export function createApp(deps: AppDeps): Express {
 
   const api = Router();
   api.use(noStore, express.json({ limit: '100kb' }), csrf(cookies));
-  api.use('/session', sessionRoutes({ sessions, cookies, realms, log, requireSession: session }));
+  // The SPA polls this to know who is signed in, so it reflects auth's current view of the account.
+  const sessionState = requireSession(sessions, cookies, { alwaysRecheck: true });
+  api.use('/session', sessionRoutes({ sessions, cookies, realms, log, requireSession: sessionState }));
   api.use(session);
   api.use('/accounts', accountRoutes({ auth, realms, characters, audited }));
   api.use('/characters', characterRoutes({ characters, audited }));

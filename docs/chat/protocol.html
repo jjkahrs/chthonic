@@ -86,7 +86,7 @@
 <td><code>0x0034</code></td>
 <td>ChatMute</td>
 <td>C</td>
-<td><code>str name, u32 minutes</code> (0: unmute). GM / admin only</td>
+<td><code>str name, u32 minutes</code> (0: unmute). GM / admin only; a GM only for an online player, and not while muted itself (<a href="security.html#mutes">Mutes</a>)</td>
 </tr>
 <tr>
 <td><code>0x0130</code></td>
@@ -152,7 +152,7 @@
 <td>3</td>
 <td><code>not_allowed</code></td>
 <td>error</td>
-<td>Mute / unmute: GM or admin only</td>
+<td>Mute / unmute refused: not a GM or admin, the caller is muted, or (a GM) the target isn't an online player</td>
 </tr>
 <tr>
 <td>4</td>

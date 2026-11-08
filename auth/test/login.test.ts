@@ -1,7 +1,8 @@
 import { SignJWT, createLocalJWKSet, decodeProtectedHeader, jwtVerify } from 'jose';
-import { describe, expect, it } from 'vitest';
+import type { RowDataPacket } from 'mysql2/promise';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { createTokenService } from '../src/services/tokens.js';
-import { MINUTE, PASSWORD, bearer, createAccount, expectError, generateKeys, login, useTestApp } from './helpers.js';
+import { DAY, MINUTE, PASSWORD, bearer, createAccount, expectError, generateKeys, login, useTestApp } from './helpers.js';
 
 const ctx = useTestApp();
 const email = 'player@example.com';
@@ -85,6 +86,46 @@ describe('account lockout', () => {
     await login(ctx, email);
     await failTimes(4);
     expect((await tryLogin({ email, password: PASSWORD })).status).toBe(200);
+  });
+});
+
+describe('lockout per client IP', () => {
+  const IP_A = '203.0.113.1';
+  const IP_B = '203.0.113.2';
+  const from = (ip: string, password: string) =>
+    ctx.api().post('/v1/auth/login').set('X-Forwarded-For', ip).send({ email, password });
+  const rows = async () =>
+    (await ctx.pool.query<RowDataPacket[]>('SELECT ip, failed_count FROM login_failures ORDER BY ip'))[0];
+
+  beforeEach(() => ctx.restart({ config: { ...ctx.config, TRUST_PROXY: 'true' } }));
+
+  it('locks IP A after 5 failures but never blocks the right password from IP B', async () => {
+    await createAccount(ctx, email);
+    for (let i = 0; i < 5; i++) expectError(await from(IP_A, 'wrong password!'), 401, 'invalid_credentials');
+    const locked = expectError(await from(IP_A, PASSWORD), 423, 'account_locked');
+    expect(locked.details).toEqual({ lockedUntil: new Date(ctx.clock.now().getTime() + 15 * MINUTE).toISOString() });
+    expect((await from(IP_B, PASSWORD)).status).toBe(200);
+    expectError(await from(IP_A, PASSWORD), 423, 'account_locked');
+  });
+
+  it('counts failures separately per IP, and a success clears only that IP', async () => {
+    await createAccount(ctx, email);
+    for (let i = 0; i < 3; i++) await from(IP_A, 'wrong password!');
+    for (let i = 0; i < 2; i++) await from(IP_B, 'wrong password!');
+    expect(await rows()).toEqual([
+      { ip: IP_A, failed_count: 3 },
+      { ip: IP_B, failed_count: 2 },
+    ]);
+    expect((await from(IP_A, PASSWORD)).status).toBe(200);
+    expect(await rows()).toEqual([{ ip: IP_B, failed_count: 2 }]);
+  });
+
+  it('prunes rows that hold no active lock once they are a day old', async () => {
+    await createAccount(ctx, email);
+    await from(IP_A, 'wrong password!');
+    ctx.clock.advance(DAY);
+    await from(IP_B, 'wrong password!');
+    expect(await rows()).toEqual([{ ip: IP_B, failed_count: 1 }]);
   });
 });
 

@@ -17,6 +17,7 @@ ConfigResult load_config(const EnvLookup& env) {
     l.str("CHAT_LINK_SECRET", c.linkSecret, true);
     if (!c.linkSecret.empty() && c.linkSecret.size() < 16) l.errors.push_back("CHAT_LINK_SECRET: at least 16 characters");
     l.num("MAX_CONNECTIONS", c.maxConnections, 1, 1000000);
+    l.num("MAX_PREAUTH_PER_IP", c.maxPreauthPerIp, 0, 1000000);
     l.num("MAX_FRAME_BYTES", c.maxFrameBytes, 64, 65535);
     l.num("HANDSHAKE_TIMEOUT_MS", c.handshakeTimeoutMs, 100, u32max);
     l.num("IDLE_TIMEOUT_MS", c.idleTimeoutMs, 1000, u32max);

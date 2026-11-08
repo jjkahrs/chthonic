@@ -30,7 +30,7 @@
 <tr>
 <td><code>TRUST_PROXY</code></td>
 <td><code>false</code></td>
-<td>Express <code>trust proxy</code> (<code>true</code>, a hop count, or subnets). Set this behind a load balancer so rate limits see the client IP</td>
+<td>Express <code>trust proxy</code> (<code>true</code>, a hop count, or subnets). Set this behind a load balancer so rate limits and the per-IP login lockout see the client IP. Leave it <code>false</code> when clients reach auth directly: then anyone can pick their IP with <code>X-Forwarded-For</code>. The full stack (<code>world/docker-compose.yml</code>) doesn't set it; only the test-only <code>world/docker/test.override.yml</code> sets <code>true</code> for the bot harness</td>
 </tr>
 <tr>
 <td><code>APP_BASE_URL</code></td>

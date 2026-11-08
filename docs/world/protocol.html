@@ -148,7 +148,7 @@ To implement a client from scratch (flow, state machine, ordering, prediction, h
 </li>
 <li><strong>Character requests:</strong> one at a time per client. A request sent while another is in flight gets <code>CharError{rate_limited}</code>.</li>
 <li><strong>Send buffer:</strong> a client that stops reading and lets more than <code>MAX_SEND_BUFFER_BYTES</code> pile up is dropped without a reason.</li>
-<li><strong>Connection limit:</strong> a connection beyond <code>MAX_CONNECTIONS</code> completes TLS, then gets <code>Disconnect{server_full}</code>.</li>
+<li><strong>Connection limit:</strong> a connection beyond <code>MAX_CONNECTIONS</code>, or beyond <code>MAX_PREAUTH_PER_IP</code> unauthenticated connections from its address, completes TLS, then gets <code>Disconnect{server_full}</code>.</li>
 </ul>
 <h2 id="messages">Messages</h2>
 <p>C = client to server, S = server to client, L = the internal link between a world server and the chat service, A = the world server's <a href="#admin">admin port</a> (<code>LinkHello</code> / <code>LinkOk</code> open it too).
@@ -730,7 +730,7 @@ that sends one gets <code>Disconnect{unexpected_message}</code>.</p>
 <td>13</td>
 <td><code>server_full</code></td>
 <td>D</td>
-<td><code>MAX_CONNECTIONS</code> reached</td>
+<td><code>MAX_CONNECTIONS</code> or <code>MAX_PREAUTH_PER_IP</code> reached</td>
 </tr>
 <tr>
 <td>14</td>

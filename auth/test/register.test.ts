@@ -1,11 +1,13 @@
 import type { RowDataPacket } from 'mysql2/promise';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DAY, HOUR, PASSWORD, createAccount, expectError, useTestApp } from './helpers.js';
 
 const ctx = useTestApp();
 const email = 'new.player@example.com';
 
 const register = (body: object) => ctx.api().post('/v1/auth/register').send(body);
+const verify = (token: string) => ctx.api().post('/v1/auth/verify-email').send({ token });
+const login = (password: string) => ctx.api().post('/v1/auth/login').send({ email, password });
 
 describe('POST /v1/auth/register', () => {
   it('creates an unverified account and emails a verification link', async () => {
@@ -46,6 +48,65 @@ describe('POST /v1/auth/register', () => {
     expect(ctx.mailer.to(email).at(-1)?.subject).toMatch(/sign-up attempt/i);
     const [rows] = await ctx.pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM accounts WHERE email = ?', [email]);
     expect(rows[0]?.n).toBe(1);
+  });
+
+  it('re-registering an unverified email: only the latest password works and old links die', async () => {
+    await register({ email, password: 'first registrant pw' });
+    const oldToken = ctx.mailer.tokenFor(email);
+    await register({ email, password: PASSWORD });
+    const newToken = ctx.mailer.tokenFor(email);
+    expect(newToken).not.toBe(oldToken);
+
+    expectError(await verify(oldToken), 400, 'invalid_token');
+    expect((await verify(newToken)).status).toBe(200);
+    expectError(await login('first registrant pw'), 401, 'invalid_credentials');
+    expect((await login(PASSWORD)).status).toBe(200);
+    const [rows] = await ctx.pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM accounts');
+    expect(rows[0]?.n).toBe(1);
+  });
+
+  it('leaves a verified account untouched when its email is re-registered', async () => {
+    await createAccount(ctx, email);
+    await register({ email, password: 'someone else pw' });
+    expect(ctx.mailer.to(email).map((m) => m.subject)).toEqual(['Chthonic account sign-up attempt']);
+    expect((await login(PASSWORD)).status).toBe(200);
+    expectError(await login('someone else pw'), 401, 'invalid_credentials');
+  });
+
+  it('answers new, unverified and verified emails identically', async () => {
+    await createAccount(ctx, 'verified@example.com');
+    await createAccount(ctx, 'unverified@example.com', { verified: false });
+    const responses = [];
+    for (const e of ['brand.new@example.com', 'unverified@example.com', 'verified@example.com']) {
+      const res = await register({ email: e, password: PASSWORD });
+      responses.push({ status: res.status, body: res.body, type: res.headers['content-type'] });
+    }
+    expect(responses[0]?.status).toBe(202);
+    expect(new Set(responses.map((r) => JSON.stringify(r))).size).toBe(1);
+  });
+
+  it('takes the same path after losing the duplicate-key race', async () => {
+    await register({ email, password: 'first registrant pw' });
+    const oldToken = ctx.mailer.tokenFor(email);
+    // Make the first email lookup miss, so the insert hits the unique key as if a concurrent request won.
+    const realQuery = ctx.pool.query.bind(ctx.pool);
+    let missed = false;
+    const spy = vi.spyOn(ctx.pool, 'query').mockImplementation(((sql: string, params?: unknown[]) => {
+      if (!missed && sql.includes('WHERE email = ?')) {
+        missed = true;
+        return Promise.resolve([[], []]);
+      }
+      return realQuery(sql, params);
+    }) as unknown as typeof ctx.pool.query);
+    try {
+      expect((await register({ email, password: PASSWORD })).status).toBe(202);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(missed).toBe(true);
+    expectError(await verify(oldToken), 400, 'invalid_token');
+    expect((await verify(ctx.mailer.tokenFor(email))).status).toBe(200);
+    expect((await login(PASSWORD)).status).toBe(200);
   });
 
   it.each([

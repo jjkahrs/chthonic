@@ -28,6 +28,7 @@ services:
       # Net threads (TLS + socket I/O) and the connection cap: from .env or the shell (tests/load.sh sets both).
       NET_THREADS: ${NET_THREADS:-4}
       MAX_CONNECTIONS: ${MAX_CONNECTIONS:-1000}
+      MAX_PREAUTH_PER_IP: ${MAX_PREAUTH_PER_IP:-8}
       # The chat service (docs/chat): clients are told CHAT_PUBLIC_HOST:CHAT_HOST_PORT (the host's view); the
       # internal link goes to the compose service. The world starts and runs without it.
       CHAT_PUBLIC_HOST: ${CHAT_PUBLIC_HOST:-127.0.0.1}
@@ -187,8 +188,8 @@ services:
     build: ../auth
     environment:
       PORT: 3000
-      # TEST ONLY: bots send a unique X-Forwarded-For each so auth's per-IP rate limits apply per bot.
-      TRUST_PROXY: "true"
+      # No TRUST_PROXY: auth keys rate limits and lockouts on the connecting address. The bot harness turns it on
+      # in docker/test.override.yml only.
       APP_BASE_URL: http://localhost:${AUTH_HOST_PORT:-3100}
       DB_HOST: mysql
       DB_PORT: 3306

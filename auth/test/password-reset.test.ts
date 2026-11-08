@@ -1,3 +1,4 @@
+import type { RowDataPacket } from 'mysql2/promise';
 import { describe, expect, it } from 'vitest';
 import { HOUR, MINUTE, PASSWORD, createAccount, expectError, login, useTestApp } from './helpers.js';
 
@@ -83,6 +84,22 @@ describe('POST /v1/auth/reset-password', () => {
     await forgot(email);
     await reset(ctx.mailer.tokenFor(email));
     expect((await tryLogin(NEW_PASSWORD)).status).toBe(200);
+  });
+
+  it('clears the lockout on every IP', async () => {
+    ctx.restart({ config: { ...ctx.config, TRUST_PROXY: 'true' } });
+    await createAccount(ctx, email);
+    const from = (ip: string, password: string) =>
+      ctx.api().post('/v1/auth/login').set('X-Forwarded-For', ip).send({ email, password });
+    for (const ip of ['203.0.113.1', '203.0.113.2']) {
+      for (let i = 0; i < 5; i++) await from(ip, 'wrong password!');
+      expectError(await from(ip, PASSWORD), 423, 'account_locked');
+    }
+    await forgot(email);
+    await reset(ctx.mailer.tokenFor(email));
+    const [rows] = await ctx.pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM login_failures');
+    expect(rows[0]?.n).toBe(0);
+    for (const ip of ['203.0.113.1', '203.0.113.2']) expect((await from(ip, NEW_PASSWORD)).status).toBe(200);
   });
 
   it('enforces the password policy and rejects bad tokens', async () => {

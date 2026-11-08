@@ -49,6 +49,11 @@
 <td>Game client connections; more get <code>server_full</code></td>
 </tr>
 <tr>
+<td><code>MAX_PREAUTH_PER_IP</code></td>
+<td><code>8</code></td>
+<td>Game client connections per remote address not yet bound to a character (<code>AuthOk</code> not sent: before or during the token check, or held for <code>CHAT_BIND_TIMEOUT_MS</code>); one more gets <code>server_full</code>. <code>0</code>: off (the test override). Not applied to <code>CHAT_LINK_PORT</code></td>
+</tr>
+<tr>
 <td><code>MAX_FRAME_BYTES</code></td>
 <td><code>4096</code></td>
 <td>Largest frame a client may send</td>

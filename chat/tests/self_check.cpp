@@ -7,6 +7,7 @@
 
 #include <auth/jwt_verify.h>
 #include <codec.h>
+#include <net/preauth_limit.h>
 
 #include <cstdio>
 #include <map>
@@ -261,14 +262,52 @@ void checkMutes() {
           "unmute: deleted in the store, MuteState{Bob, 0} to the links");
     r.send(2, ChatTarget::zone, "", "free again", T0 + 30s, W0 + 12min);
     check(r.out.got(2, ChatTarget::zone, "Bob", "free again"), "unmuted Bob talks again");
-    r.router.handle(5, proto::ChatMute{"Offline", 5}, T0, W0);
-    check(r.router.mutes().minutes_left("offline", W0) == 5u, "a character that isn't online can be muted too (by name)");
+    r.online(16, "Ada", 11, 6, proto::Role::admin);
+    r.router.handle(6, proto::ChatMute{"Offline", 5}, T0, W0);
+    check(r.router.mutes().minutes_left("offline", W0) == 5u, "an admin can mute a character that isn't online (by name)");
     r.router.load_mute("Loaded", W0 + 1min);
     check(r.router.expire_mutes(W0 + 2min) == 1 && !r.router.mutes().minutes_left("Loaded", W0) &&
               r.router.mutes().minutes_left("Offline", W0 + 2min) == 3u,
           "expired mutes are purged, running ones kept");
     r.router.handle(5, proto::ChatMute{"Bob", 99999999}, T0, W0);
     check(r.out.notice(5)->minutes == 525600, "a mute is capped at CHAT_MUTE_MAX_MINUTES");
+}
+
+// CHAT-01: a GM mutes only known, bound players; a muted caller can't mute or unmute; an admin mutes anyone.
+void checkMuteRoles() {
+    Rig r;
+    populate(r); // Gina (5) is a GM, Dan (14) has no chat client
+    r.online(16, "Ada", 11, 6, proto::Role::admin);
+    r.online(17, "Gus", 11, 7, proto::Role::gm);
+    r.out.clear();
+    const auto refused = [&](uint32_t sid, const std::string& name, uint32_t minutes, SysTime wall = W0) {
+        r.out.clear();
+        r.router.handle(sid, proto::ChatMute{name, minutes}, T0, wall);
+        return r.out.notice(sid) && r.out.notice(sid)->code == ChatNoticeCode::not_allowed && r.out.persisted.empty() &&
+               r.out.links.empty();
+    };
+    check(refused(5, "Ada", 10) && !r.router.mutes().minutes_left("Ada", W0), "a GM can't mute an admin");
+    check(refused(5, "Gus", 10) && !r.router.mutes().minutes_left("Gus", W0), "a GM can't mute another GM");
+    check(refused(5, "Nobody", 10) && !r.router.mutes().minutes_left("Nobody", W0), "a GM can't mute an unknown / offline name");
+    check(refused(5, "Dan", 10) && !r.router.mutes().minutes_left("Dan", W0), "a GM can't mute a character whose role is unknown (no chat client)");
+    check(refused(5, "Ada", 0), "a GM can't unmute an admin either");
+    r.out.clear();
+    r.router.handle(5, proto::ChatMute{"Alice", 10}, T0, W0);
+    check(r.out.notice(5)->code == ChatNoticeCode::mute_set && r.router.mutes().minutes_left("Alice", W0) == 10u,
+          "a GM mutes a known player");
+    r.out.clear();
+    r.router.handle(6, proto::ChatMute{"Gina", 10}, T0, W0);
+    check(r.out.notice(6)->code == ChatNoticeCode::mute_set && r.router.mutes().minutes_left("Gina", W0) == 10u,
+          "an admin can mute a GM");
+    check(refused(5, "Gina", 0, W0 + 1min) && r.router.mutes().minutes_left("Gina", W0 + 1min) == 9u,
+          "a muted GM can't unmute itself");
+    check(refused(5, "Alice", 0, W0 + 1min) && r.router.mutes().minutes_left("Alice", W0 + 1min) == 9u,
+          "a muted GM can't unmute anyone else");
+    check(refused(5, "Bob", 10, W0 + 1min) && !r.router.mutes().minutes_left("Bob", W0 + 1min), "a muted GM can't mute");
+    r.out.clear();
+    r.router.handle(6, proto::ChatMute{"Gina", 0}, T0, W0 + 1min);
+    check(r.out.notice(6)->code == ChatNoticeCode::mute_cleared && !r.router.mutes().minutes_left("Gina", W0 + 1min),
+          "an admin unmutes the GM");
 }
 
 void checkLimits() {
@@ -291,6 +330,22 @@ void checkLimits() {
     check(r.out.bySession.count(99) == 0, "an unbound session is ignored");
 }
 
+// MAX_PREAUTH_PER_IP (the accept path's per-address count; the servers release on AuthOk or close).
+void checkPreauthLimit() {
+    net::PreauthLimit p;
+    int admitted = 0;
+    for (int i = 0; i < 9; ++i) admitted += p.try_add("10.0.0.1", 8);
+    check(admitted == 8 && p.count("10.0.0.1") == 8, "cap 8: the 9th pre-auth socket from one address is refused");
+    check(p.try_add("10.0.0.2", 8), "another address is unaffected");
+    p.release("10.0.0.1"); // one authenticated (or closed)
+    check(p.try_add("10.0.0.1", 8) && !p.try_add("10.0.0.1", 8), "after one authenticates or closes, one more is allowed");
+    for (int i = 0; i < 9; ++i) p.release("10.0.0.1");
+    check(p.count("10.0.0.1") == 0 && p.try_add("10.0.0.1", 8), "released to zero (extra releases ignored)");
+    bool all = true;
+    for (int i = 0; i < 100; ++i) all = all && p.try_add("10.0.0.3", 0);
+    check(all && p.count("10.0.0.3") == 0, "cap 0: no limit, nothing counted");
+}
+
 void checkConfig() {
     std::map<std::string, std::string> env = {{"AUTH_JWKS_URL", "http://auth:3000/.well-known/jwks.json"},
                                               {"DB_HOST", "mysql"}, {"DB_USER", "u"}, {"DB_PASSWORD", "p"},
@@ -303,6 +358,12 @@ void checkConfig() {
     check(ok.errors.empty() && ok.config.port == 7778 && ok.config.linkPort == 7779 && ok.config.bindTimeoutMs == 5000,
           "minimal config valid; ports 7778 / 7779");
     check(ok.config.channels == std::vector<std::string>{"General", "Trade", "LFG"}, "default channels General, Trade, LFG");
+    check(ok.config.maxPreauthPerIp == 8, "MAX_PREAUTH_PER_IP defaults to 8");
+    env["MAX_PREAUTH_PER_IP"] = "0";
+    check(load_config(lookup).errors.empty() && load_config(lookup).config.maxPreauthPerIp == 0, "MAX_PREAUTH_PER_IP=0 (off) accepted");
+    env["MAX_PREAUTH_PER_IP"] = "-1";
+    check(load_config(lookup).errors.size() == 1, "MAX_PREAUTH_PER_IP=-1 refused");
+    env.erase("MAX_PREAUTH_PER_IP");
     env["CHAT_CHANNELS"] = " World , Trade,,";
     check(load_config(lookup).config.channels == std::vector<std::string>{"World", "Trade"}, "CHAT_CHANNELS read in order");
     env["CHAT_CHANNELS"] = "Good,Bad Name";
@@ -334,8 +395,10 @@ int main() {
     checkZone();
     checkIgnore();
     checkMutes();
+    checkMuteRoles();
     checkLimits();
     checkConfig();
+    checkPreauthLimit();
     checkTokens();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

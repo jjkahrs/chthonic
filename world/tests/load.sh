@@ -37,6 +37,7 @@ mkdir -p build
 . tests/stack_override.sh
 stack_override "$LAYER_CAP"
 
+docker compose up -d --no-deps auth >/dev/null 2>&1 # with the test override's TRUST_PROXY, if it ran without
 docker compose up -d --no-deps --force-recreate world >/dev/null 2>&1
 for i in $(seq 120); do
     [ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q world)")" = healthy ] && break
@@ -52,7 +53,7 @@ botrc=${PIPESTATUS[0]}
 
 docker compose stop -t 15 world >/dev/null 2>&1 # emits "tick stats total"
 logs=$(docker logs --since "$since" "$WORLD" 2>&1)
-if [ -n "${COMPOSE_FILE:-}" ]; then
+if stack_overridden; then
     stack_default
     docker compose up -d --no-deps world >/dev/null 2>&1 # back to the default maps
 else

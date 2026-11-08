@@ -1,0 +1,17 @@
+# TEST ONLY: settings the bot harness needs, never for a stack reachable by real players.
+# tests/integration.sh and tests/load.sh always run with it (COMPOSE_FILE, tests/stack_override.sh); by hand:
+#   docker compose -f docker-compose.yml -f docker/test.override.yml up -d --build
+# Back to the default stack: docker compose up -d
+services:
+  auth:
+    environment:
+      # The bots send a unique X-Forwarded-For each (bot/auth_client.h), so auth's per-IP rate limits and login
+      # lockout apply per bot instead of to the whole harness. Anyone who can reach auth can then pick their IP.
+      TRUST_PROXY: "true"
+  world:
+    environment:
+      # Every bot connects from the one harness address.
+      MAX_PREAUTH_PER_IP: "0"
+  chat:
+    environment:
+      MAX_PREAUTH_PER_IP: "0"

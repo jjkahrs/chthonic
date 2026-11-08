@@ -1,8 +1,9 @@
 // Blocking HTTP calls to the auth service and Mailpit, used to obtain real access tokens for bots.
 //
-// TEST ONLY: every call carries X-Forwarded-For with a per-bot address. The test compose sets TRUST_PROXY=true on
-// auth, so its per-IP rate limits (register 5/h, login 20/min) apply per bot instead of to the whole harness.
-// Never enable TRUST_PROXY on an auth service that is reachable without a trusted proxy in front of it.
+// TEST ONLY: every call carries X-Forwarded-For with a per-bot address. The default stack doesn't trust it (no
+// TRUST_PROXY on auth); the test-only docker/test.override.yml, which tests/integration.sh and tests/load.sh always
+// add, sets TRUST_PROXY=true so auth's per-IP rate limits (register 5/h, login 20/min) apply per bot instead of to
+// the whole harness. Never enable TRUST_PROXY on an auth service that is reachable without a trusted proxy in front.
 #pragma once
 #include <optional>
 #include <string>

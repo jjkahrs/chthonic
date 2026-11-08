@@ -74,8 +74,16 @@ export function csrf(cookies: CookieWriter): RequestHandler {
 
 export const sessionOf = (res: Response): SessionContext => res.locals.session as SessionContext;
 
-/** Requires a signed-in admin or GM; refreshes an expired access token through auth on the way. */
-export function requireSession(sessions: SessionService, cookies: CookieWriter): RequestHandler {
+/**
+ * Requires a signed-in admin or GM; refreshes an expired access token through auth on the way.
+ * Writes (and every request when alwaysRecheck is set) take the caller's role from auth's /v1/me, not the token,
+ * so a demoted, banned or deleted caller loses its powers within RECHECK_MS.
+ */
+export function requireSession(
+  sessions: SessionService,
+  cookies: CookieWriter,
+  opts: { alwaysRecheck?: boolean } = {},
+): RequestHandler {
   return async (req, res, next) => {
     const { [COOKIES.access]: access, [COOKIES.refresh]: refresh } = readCookies(req);
     let context: SessionContext | undefined;
@@ -97,7 +105,20 @@ export function requireSession(sessions: SessionService, cookies: CookieWriter):
         throw unauthorized('Session expired; sign in again');
       }
     }
-    if (context.caller.role === 'player') throw forbidden('Only admins and GMs can use the admin app');
+    if (opts.alwaysRecheck || !SAFE_METHODS.has(req.method)) {
+      try {
+        context.caller = await sessions.recheck(context.token);
+      } catch (err) {
+        if (err instanceof AppError && err.status === 401) cookies.clearSession(res);
+        throw err;
+      }
+    }
+    if (context.caller.role === 'player') {
+      // As at login: a player's session is ended, not kept around.
+      if (refresh) await sessions.logout(refresh).catch(() => {});
+      cookies.clearSession(res);
+      throw forbidden('Only admins and GMs can use the admin app');
+    }
     res.locals.session = context;
     next();
   };

@@ -57,7 +57,7 @@
 <li><strong>Movement:</strong> bounds, speed and the ground (no flying), with <code>Correction</code>. Rejected moves are never replicated.</li>
 <li><strong>Chat:</strong> size limit, UTF-8 validation, control-character stripping and the 5 per 10 s rate limit, for say, yell and emote alike. A yell's reach is capped by <code>CHAT_YELL_RADIUS</code>; a character the chat service muted is dropped with a notice (<a href="#chat-link">Chat link</a>).</li>
 <li><strong>Client events:</strong> name, size and JSON-object checks, and 10 per second per character (not configurable; see <a href="#client-events">Client events</a>).</li>
-<li><strong>Connections:</strong> a connection limit and a send-buffer cap for clients that stop reading.</li>
+<li><strong>Connections:</strong> a connection limit and a send-buffer cap for clients that stop reading. On the game port, at most <code>MAX_PREAUTH_PER_IP</code> (default 8) connections per remote address may be unauthenticated at once: a connection counts from accept until its token is verified and <code>AuthOk</code> is sent (or it closes), and one more from that address gets <code>Disconnect{server_full}</code>, as the global cap does. So one address can't hold every slot with sockets that never log in; behind a NAT, eight players can be logging in at the same time. The admin port is not counted.</li>
 <li><strong>Malformed input:</strong> an unknown opcode, a bad length or a decode failure disconnects the client with a reason code.</li>
 </ul>
 <h2 id="chat-link">Chat link</h2>
@@ -95,7 +95,8 @@
 </ul>
 <h2 id="trust_proxy-test-only">TRUST_PROXY (test only)</h2>
 <ul>
-<li><strong>What it does:</strong> the test compose sets <code>TRUST_PROXY=true</code> on auth. Every bot sends its own <code>X-Forwarded-For</code> address, so auth's per-IP limits (register 5/h, login 20/min) apply per bot. That lets one harness register, verify and log in 500+ accounts.</li>
+<li><strong>Default stack:</strong> <code>docker-compose.yml</code> doesn't set <code>TRUST_PROXY</code>, so auth ignores <code>X-Forwarded-For</code> and keys its rate limits and login lockout on the connecting address.</li>
+<li><strong>What the test override does:</strong> <code>docker/test.override.yml</code> (test only) sets <code>TRUST_PROXY=true</code> on auth, and <code>MAX_PREAUTH_PER_IP=0</code> on world and chat. Every bot sends its own <code>X-Forwarded-For</code> address, so auth's per-IP limits (register 5/h, login 20/min) and lockout apply per bot. That lets one harness register, verify and log in 500+ accounts. <code>tests/integration.sh</code> and <code>tests/load.sh</code> always add it (<code>tests/stack_override.sh</code>) and recreate auth with it; <code>docker compose up -d</code> goes back to the default.</li>
 <li><strong>Never in production:</strong> don't set it on an auth service that clients can reach without a trusted proxy in front of it. Anyone could then forge their IP and bypass the limits.</li>
 <li><strong>Auth's key in scenario 8:</strong> the test bot also mounts auth's key volume read-only and runs as root for that one scenario. It uses the key to mint an expired but correctly signed token. This is test-only too.</li>
 </ul>

@@ -60,5 +60,7 @@ export function createAuthClient(baseUrl: string) {
     refresh: (refreshToken: string) =>
       request<AuthSession>('/v1/auth/refresh', { method: 'POST', body: { refreshToken } }),
     logout: (refreshToken: string) => request<void>('/v1/auth/logout', { method: 'POST', body: { refreshToken } }),
+    /** The account's current role from auth's DB; 401 once it is banned or deleted. */
+    me: (token: string) => request<{ id: number; email: string; role: string }>('/v1/me', { token }),
   };
 }

@@ -7,6 +7,7 @@
 #include "mute_store.h"
 
 #include <auth/token_service.h>
+#include <net/preauth_limit.h>
 #include <net/session.h>
 
 #include <asio.hpp>
@@ -35,6 +36,7 @@ private:
         uint64_t accountId = 0;
         proto::Role role = proto::Role::player;
         std::shared_ptr<asio::steady_timer> hold; // while holding: CHAT_BIND_TIMEOUT_MS
+        std::string preauthIp; // counted in preauth_ until bound (AuthOk); empty once released
     };
     struct Link {
         std::shared_ptr<net::Session> session;
@@ -46,6 +48,7 @@ private:
     void on_link(net::Session& s, proto::Message&& m);
     void auth_done(uint32_t sessionId, const TokenResult& r);
     void bind(Client& c);
+    void release_preauth(Client& c); // bound or closed: no longer counts against MAX_PREAUTH_PER_IP
     void drop_sessions(const std::vector<uint32_t>& sessions); // their character is gone: no_character
     void on_closed(net::Session& s);
     void schedule_purge();
@@ -61,6 +64,7 @@ private:
     uint32_t nextSessionId_ = 1;
     std::unordered_map<uint32_t, Client> clients_;
     std::unordered_map<uint32_t, Link> links_;
+    net::PreauthLimit preauth_; // MAX_PREAUTH_PER_IP over clients_ (the client port only)
     asio::steady_timer purgeTimer_;
     bool shuttingDown_ = false;
     std::function<void()> onShutdownDone_;
