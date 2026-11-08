@@ -3,7 +3,6 @@ import type { Clock } from '../clock.js';
 import { isDuplicateKey, withTransaction, type Db } from '../db/pool.js';
 import { AppError, forbidden } from '../errors.js';
 import {
-  clearLoginFailures,
   deleteAccount,
   findAccountById,
   insertAccount,
@@ -15,6 +14,7 @@ import {
   type Role,
 } from '../repositories/accounts.js';
 import { findActiveBan, findActiveBans, insertBan, liftActiveBans, listBans, type Ban } from '../repositories/bans.js';
+import { clearLoginFailures } from '../repositories/loginFailures.js';
 import { revokeAllRefreshTokens } from '../repositories/refreshTokens.js';
 import { toAccountView, type AccountView, type AuthService } from './auth.js';
 import { hashPassword } from './crypto.js';
@@ -147,6 +147,7 @@ export function createAdminService(deps: { pool: Pool; clock: Clock; auth: Pick<
       await auth.forgotPassword((await requireAccount(pool, accountId)).email);
     },
 
+    /** Clears the failure counters and locks for every IP. */
     async unlock(accountId: number): Promise<void> {
       await requireAccount(pool, accountId);
       await clearLoginFailures(pool, accountId);

@@ -65,7 +65,7 @@ export function generateKeys(): Promise<SigningKeys> {
   return signingKeysFromPem(privateKey.export({ format: 'pem', type: 'pkcs8' }) as string);
 }
 
-const TABLES = ['rate_limits', 'refresh_tokens', 'email_tokens', 'bans', 'realms', 'accounts'];
+const TABLES = ['login_failures', 'rate_limits', 'refresh_tokens', 'email_tokens', 'bans', 'realms', 'accounts'];
 
 export async function resetDb(pool: Pool): Promise<void> {
   const conn = await pool.getConnection();

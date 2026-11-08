@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Runs every integration scenario against the compose stack (docker compose up -d --build first).
+# Runs every integration scenario against the compose stack (docker compose up -d --build first). Every compose
+# call adds the test-only docker/test.override.yml (tests/stack_override.sh); auth, world and chat are recreated
+# with it first if they run without it, and are left that way (back to the default: docker compose up -d).
 # Prints PASS/FAIL/SKIP per scenario and the counts, and exits non-zero if any failed.
 # Scenarios that need the sample maps (0, 16-20, 25, 30, 32, 41, 42) SKIP when the world's mounted maps folder
 # (MAPS_DIR, default ./maps) lacks the files they need.
@@ -15,6 +17,9 @@ export MSYS_NO_PATHCONV=1 # Git Bash on Windows: keep container paths as written
 RUN="${RUN_ID:-it$(date +%s)}"
 LOGDIR="${LOGDIR:-build/integration-$RUN}"
 mkdir -p "$LOGDIR"
+. tests/stack_override.sh
+stack_default
+docker compose up -d auth world chat >/dev/null 2>&1 # recreates only what runs without the test override
 WORLD=$(docker compose ps -q world)
 declare -a RESULTS=()
 FAILED=0 NPASS=0 NFAIL=0 NSKIP=0
@@ -116,7 +121,7 @@ graceful() {
 }
 
 echo "run id: $RUN   logs: $LOGDIR"
-wait_healthy world || { echo "world is not healthy; run docker compose up -d --build"; exit 1; }
+wait_healthy auth && wait_healthy world || { echo "auth or world is not healthy; run docker compose up -d --build"; exit 1; }
 
 summary() {
     echo
@@ -195,7 +200,6 @@ fi
 
 # 43: layers (docs/world/maps.html#layers): the world recreated with START_MAP at "layerCap": 2 (a copy of the
 # maps, tests/stack_override.sh), then again with the default maps.
-. tests/stack_override.sh
 layer_scenario() {
     local name="43 layers: START_MAP at layerCap 2, A and B share the base layer, C lands in a new layer and sees neither" log="$LOGDIR/43.log" ok=0
     echo "--- $name"

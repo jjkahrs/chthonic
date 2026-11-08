@@ -10,10 +10,19 @@ export interface Account {
   passwordHash: string;
   role: Role;
   emailVerifiedAt: Date | null;
+  /** Summed over every IP in login_failures (moderation view only; login checks its own IP's row). */
   failedLoginCount: number;
+  /** Latest lock over every IP in login_failures (moderation view only). */
   lockedUntil: Date | null;
   createdAt: Date;
 }
+
+// accounts.failed_login_count / locked_until are legacy and no longer read: lockout is per
+// (account, IP) in login_failures since migration 003.
+const SELECT_ACCOUNTS = `SELECT accounts.*,
+  (SELECT COALESCE(SUM(f.failed_count), 0) FROM login_failures f WHERE f.account_id = accounts.id) AS lf_failed_count,
+  (SELECT MAX(f.locked_until) FROM login_failures f WHERE f.account_id = accounts.id) AS lf_locked_until
+  FROM accounts`;
 
 const toAccount = (r: RowDataPacket): Account => ({
   id: r.id,
@@ -21,18 +30,18 @@ const toAccount = (r: RowDataPacket): Account => ({
   passwordHash: r.password_hash,
   role: r.role,
   emailVerifiedAt: r.email_verified_at,
-  failedLoginCount: r.failed_login_count,
-  lockedUntil: r.locked_until,
+  failedLoginCount: Number(r.lf_failed_count),
+  lockedUntil: r.lf_locked_until,
   createdAt: r.created_at,
 });
 
 export async function findAccountByEmail(db: Db, email: string): Promise<Account | undefined> {
-  const [rows] = await db.query<RowDataPacket[]>('SELECT * FROM accounts WHERE email = ?', [email]);
+  const [rows] = await db.query<RowDataPacket[]>(`${SELECT_ACCOUNTS} WHERE email = ?`, [email]);
   return rows[0] && toAccount(rows[0]);
 }
 
 export async function findAccountById(db: Db, id: number): Promise<Account | undefined> {
-  const [rows] = await db.query<RowDataPacket[]>('SELECT * FROM accounts WHERE id = ?', [id]);
+  const [rows] = await db.query<RowDataPacket[]>(`${SELECT_ACCOUNTS} WHERE id = ?`, [id]);
   return rows[0] && toAccount(rows[0]);
 }
 
@@ -47,17 +56,13 @@ export async function insertAccount(
   return res.insertId;
 }
 
-/** Counts a failed login; once maxFailures is reached the account is locked and the counter restarts. */
-export async function recordFailedLogin(db: Db, id: number, maxFailures: number, lockUntil: Date): Promise<void> {
-  await db.query('UPDATE accounts SET failed_login_count = failed_login_count + 1 WHERE id = ?', [id]);
-  await db.query(
-    'UPDATE accounts SET locked_until = ?, failed_login_count = 0 WHERE id = ? AND failed_login_count >= ?',
-    [lockUntil, id, maxFailures],
+/** Replaces the hash only while the email is still unverified; false if it was verified meanwhile. */
+export async function setUnverifiedPasswordHash(db: Db, id: number, passwordHash: string): Promise<boolean> {
+  const [res] = await db.query<ResultSetHeader>(
+    'UPDATE accounts SET password_hash = ? WHERE id = ? AND email_verified_at IS NULL',
+    [passwordHash, id],
   );
-}
-
-export async function clearLoginFailures(db: Db, id: number): Promise<void> {
-  await db.query('UPDATE accounts SET failed_login_count = 0, locked_until = NULL WHERE id = ?', [id]);
+  return res.affectedRows > 0;
 }
 
 export async function markEmailVerified(db: Db, id: number, at: Date): Promise<void> {
@@ -114,11 +119,13 @@ export async function searchAccounts(
   }
   if (f.verified !== undefined) where.push(`email_verified_at IS ${f.verified ? 'NOT ' : ''}NULL`);
   if (f.locked !== undefined) {
-    where.push(f.locked ? 'locked_until > ?' : '(locked_until IS NULL OR locked_until <= ?)');
+    where.push(
+      `${f.locked ? '' : 'NOT '}EXISTS (SELECT 1 FROM login_failures f WHERE f.account_id = accounts.id AND f.locked_until > ?)`,
+    );
     params.push(now);
   }
   const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const [rows] = await db.query<RowDataPacket[]>(`SELECT * FROM accounts ${clause} ORDER BY id LIMIT ? OFFSET ?`, [
+  const [rows] = await db.query<RowDataPacket[]>(`${SELECT_ACCOUNTS} ${clause} ORDER BY id LIMIT ? OFFSET ?`, [
     ...params,
     f.limit,
     f.offset,

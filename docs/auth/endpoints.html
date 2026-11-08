@@ -38,7 +38,7 @@
 <td>POST</td>
 <td><code>/v1/auth/register</code></td>
 <td>none</td>
-<td><code>{email,password}</code> → 202. Same response for taken emails. 5/h/IP</td>
+<td><code>{email,password}</code> → 202. Same response for taken emails. An unverified account with this email gets the new password and a new verification link (older links die). 5/h/IP</td>
 </tr>
 <tr>
 <td>POST</td>
@@ -98,7 +98,7 @@
 <td>GET</td>
 <td><code>/v1/admin/accounts</code></td>
 <td>admin, gm</td>
-<td>Search, ordered by id. Query: <code>q</code> (email substring, or exact id when all digits), <code>role</code>, <code>banned</code>, <code>verified</code>, <code>locked</code> (<code>true</code>/<code>false</code>), <code>limit</code> (1–100, default 50), <code>offset</code>. → <code>{accounts, total, limit, offset}</code>; each account has <code>failedLoginCount</code>, <code>lockedUntil</code> and <code>activeBan</code>. GMs only get <code>player</code> accounts</td>
+<td>Search, ordered by id. Query: <code>q</code> (email substring, or exact id when all digits), <code>role</code>, <code>banned</code>, <code>verified</code>, <code>locked</code> (<code>true</code>/<code>false</code>), <code>limit</code> (1–100, default 50), <code>offset</code>. → <code>{accounts, total, limit, offset}</code>; each account has <code>failedLoginCount</code> (summed over client IPs), <code>lockedUntil</code> (the latest lock of any IP; <code>locked=true</code> means some IP is locked now) and <code>activeBan</code>. GMs only get <code>player</code> accounts</td>
 </tr>
 <tr>
 <td>POST</td>
@@ -134,7 +134,7 @@
 <td>POST</td>
 <td><code>/v1/admin/accounts/:id/unlock</code></td>
 <td>admin</td>
-<td>Clear <code>failedLoginCount</code> and <code>lockedUntil</code> → 204</td>
+<td>Clear <code>failedLoginCount</code> and <code>lockedUntil</code> for every client IP → 204</td>
 </tr>
 <tr>
 <td>POST</td>

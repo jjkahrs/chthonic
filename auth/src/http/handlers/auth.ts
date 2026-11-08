@@ -26,7 +26,8 @@ export function authHandlers(auth: AuthService) {
 
     async login(req: Request, res: Response) {
       const { email, password } = parse(loginBody, req.body);
-      res.json(await auth.login(email, password));
+      // Same key as the rate limiter (middleware.ts), so TRUST_PROXY governs both.
+      res.json(await auth.login(email, password, req.ip ?? 'unknown'));
     },
 
     async refresh(req: Request, res: Response) {

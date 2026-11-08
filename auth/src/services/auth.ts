@@ -7,13 +7,12 @@ import { AppError, unauthorized } from '../errors.js';
 import type { Logger } from '../logger.js';
 import type { Mail, Mailer } from '../mailer.js';
 import {
-  clearLoginFailures,
   findAccountByEmail,
   findAccountById,
   insertAccount,
   markEmailVerified,
-  recordFailedLogin,
   setPasswordHash,
+  setUnverifiedPasswordHash,
   type Account,
 } from '../repositories/accounts.js';
 import { findActiveBan } from '../repositories/bans.js';
@@ -23,6 +22,12 @@ import {
   useAllEmailTokens,
   type EmailTokenPurpose,
 } from '../repositories/emailTokens.js';
+import {
+  clearLoginFailure,
+  clearLoginFailures,
+  findLoginFailure,
+  recordFailedLogin,
+} from '../repositories/loginFailures.js';
 import {
   findRefreshTokenForUpdate,
   insertRefreshToken,
@@ -150,9 +155,7 @@ export function createAuthService(deps: {
     };
   }
 
-  /** An unverified owner gets a fresh verification link; a verified one gets a notice. */
-  async function notifyExisting(account: Account): Promise<void> {
-    if (!account.emailVerifiedAt) return sendVerification(pool, account);
+  function sendSignUpNotice(account: Pick<Account, 'email'>): void {
     sendMail({
       to: account.email,
       subject: 'Chthonic account sign-up attempt',
@@ -162,12 +165,29 @@ export function createAuthService(deps: {
     });
   }
 
+  /**
+   * Email already registered. Verified: the owner gets a notice. Unverified: the latest
+   * registrant's password replaces the pending one and every older verify link dies, so
+   * whoever registered first can't have the inbox owner verify their password.
+   */
+  async function registerExisting(account: Account, passwordHash: string): Promise<void> {
+    if (account.emailVerifiedAt) return sendSignUpNotice(account);
+    const replaced = await withTransaction(pool, async (conn) => {
+      if (!(await setUnverifiedPasswordHash(conn, account.id, passwordHash))) return false;
+      await useAllEmailTokens(conn, account.id, 'verify_email', clock.now());
+      await sendVerification(conn, account);
+      return true;
+    });
+    // Verified between the lookup and the update: treat it as verified.
+    if (!replaced) sendSignUpNotice(account);
+  }
+
   return {
-    /** Same outcome whether or not the email is taken; the owner of an existing account gets a notice instead. */
+    /** Same outcome whether or not the email is taken (see registerExisting for what happens then). */
     async register(email: string, password: string): Promise<void> {
       const passwordHash = await hashPassword(password);
       const existing = await findAccountByEmail(pool, email);
-      if (existing) return notifyExisting(existing);
+      if (existing) return registerExisting(existing, passwordHash);
       try {
         await withTransaction(pool, async (conn) => {
           const id = await insertAccount(conn, {
@@ -183,7 +203,7 @@ export function createAuthService(deps: {
         if (!isDuplicateKey(err)) throw err;
         // Lost a race with a concurrent registration of the same email.
         const winner = await findAccountByEmail(pool, email);
-        if (winner) await notifyExisting(winner);
+        if (winner) await registerExisting(winner, passwordHash);
       }
     },
 
@@ -204,25 +224,27 @@ export function createAuthService(deps: {
 
     /**
      * Check order: lockout, password, verified, ban. Unverified/banned status is only
-     * revealed to someone who knows the password.
+     * revealed to someone who knows the password. Failures and the lockout count per
+     * (account, client IP): a lock on one IP never blocks the account from another.
      */
-    async login(email: string, password: string): Promise<Session> {
+    async login(email: string, password: string, ip: string): Promise<Session> {
       const now = clock.now();
       const account = await findAccountByEmail(pool, email);
       if (!account) {
         await verifyAgainstDummy(password);
         throw invalidCredentials();
       }
-      if (account.lockedUntil && account.lockedUntil > now) {
+      const failure = await findLoginFailure(pool, account.id, ip);
+      if (failure?.lockedUntil && failure.lockedUntil > now) {
         throw new AppError(423, 'account_locked', 'Too many failed logins; the account is temporarily locked', {
-          lockedUntil: account.lockedUntil.toISOString(),
+          lockedUntil: failure.lockedUntil.toISOString(),
         });
       }
       if (!(await verifyPassword(password, account.passwordHash))) {
-        await recordFailedLogin(pool, account.id, MAX_FAILED_LOGINS, new Date(now.getTime() + LOCKOUT_MS));
+        await recordFailedLogin(pool, account.id, ip, MAX_FAILED_LOGINS, new Date(now.getTime() + LOCKOUT_MS), now);
         throw invalidCredentials();
       }
-      if (account.failedLoginCount > 0 || account.lockedUntil) await clearLoginFailures(pool, account.id);
+      if (failure) await clearLoginFailure(pool, account.id, ip);
       if (!account.emailVerifiedAt) {
         throw new AppError(403, 'email_not_verified', 'Verify your email address before logging in');
       }
@@ -279,7 +301,7 @@ export function createAuthService(deps: {
       });
     },
 
-    /** Also unlocks the account and marks the email verified: the user just proved they own the inbox. */
+    /** Also unlocks the account from every IP and marks the email verified: the user just proved they own the inbox. */
     async resetPassword(token: string, newPassword: string): Promise<void> {
       const passwordHash = await hashPassword(newPassword);
       const now = clock.now();

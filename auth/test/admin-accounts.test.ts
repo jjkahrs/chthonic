@@ -240,6 +240,23 @@ describe('account actions', () => {
     expect((await tryLogin(PLAYER)).status).toBe(200);
   });
 
+  it('unlock clears the lockout on every IP', async () => {
+    ctx.restart({ config: { ...ctx.config, TRUST_PROXY: 'true' } });
+    const from = (ip: string, password = PASSWORD) =>
+      ctx.api().post('/v1/auth/login').set('X-Forwarded-For', ip).send({ email: PLAYER, password });
+    for (const ip of ['203.0.113.1', '203.0.113.2']) {
+      for (let i = 0; i < 5; i++) await from(ip, 'wrong password!!');
+      expectError(await from(ip), 423, 'account_locked');
+    }
+    expect((await asAdmin().get(`/v1/admin/accounts/${playerId}`)).body.lockedUntil).not.toBeNull();
+    expect((await asAdmin().post(`/v1/admin/accounts/${playerId}/unlock`)).status).toBe(204);
+    expect((await asAdmin().get(`/v1/admin/accounts/${playerId}`)).body).toMatchObject({
+      failedLoginCount: 0,
+      lockedUntil: null,
+    });
+    for (const ip of ['203.0.113.1', '203.0.113.2']) expect((await from(ip)).status).toBe(200);
+  });
+
   it('revoke-sessions ends every refresh token', async () => {
     const a = await login(ctx, PLAYER);
     const b = await login(ctx, PLAYER);

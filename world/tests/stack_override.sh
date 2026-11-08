@@ -1,11 +1,12 @@
-# Sourced by load.sh and integration.sh (from world): one run's compose override, build/stack-override.yml,
-# which every later `docker compose` call picks up through COMPOSE_FILE (the bot's `compose run` too, so it never
-# recreates the world with other settings).
+# Sourced by load.sh and integration.sh (from world). COMPOSE_FILE always holds docker-compose.yml plus the test-only
+# docker/test.override.yml (TRUST_PROXY on auth, MAX_PREAUTH_PER_IP=0 on world and chat), and with stack_override
+# also one run's override, build/stack-override.yml; every later `docker compose` call picks it up (the bot's
+# `compose run` too, so it never recreates the world with other settings).
 #   stack_override CAP: mounts a copy of the maps folder (MAPS_DIR from the shell or .env, default ./maps) with "layerCap": CAP on START_MAP's map.json, for the world
 #     and the bot (docs/world/maps.html#layers). CAP empty: stack_default.
 #   MAP_DIR (a maps folder: absolute, or ./ or ../ relative to world/; load.sh only): that folder instead of
 #     the maps folder, START_MAP (default 1) the world's start map; with CAP, the copy is of it.
-#   stack_default: docker-compose.yml alone again.
+#   stack_default: docker-compose.yml + the test override only.
 stack_override() {
     local cap=$1 out=build/stack-override.yml start src=${MAP_DIR:-$(maps_dir)} mount=./build/layer-maps
     [ -z "$cap" ] && [ -z "${MAP_DIR:-}" ] && { stack_default; return; }
@@ -22,10 +23,16 @@ stack_override() {
         sed -i "0,/{/s//{\"layerCap\": $cap,/" "$start"
         echo "  layers: $start has \"layerCap\": $cap for this run"
     fi
-    export COMPOSE_PATH_SEPARATOR=: COMPOSE_FILE="docker-compose.yml:$out"
+    export COMPOSE_PATH_SEPARATOR="$COMPOSE_SEP" COMPOSE_FILE="$TEST_COMPOSE$COMPOSE_SEP$out"
 }
 
 # MAPS_DIR as docker compose sees it: the shell's, else .env's, else ./maps.
 maps_dir() { local d=${MAPS_DIR:-$(sed -n 's/^MAPS_DIR=//p' .env 2>/dev/null | tr -d '\r' | tail -1)}; echo "${d:-./maps}"; }
 
-stack_default() { unset COMPOSE_FILE COMPOSE_PATH_SEPARATOR; }
+# The caller's COMPOSE_FILE (e.g. with docker/tsan.override.yml, ';'-separated on Windows) stays in front.
+COMPOSE_SEP=${COMPOSE_PATH_SEPARATOR:-}
+[ -n "$COMPOSE_SEP" ] || case ${COMPOSE_FILE:-} in *\;*) COMPOSE_SEP=';' ;; *) COMPOSE_SEP=: ;; esac
+TEST_COMPOSE="${COMPOSE_FILE:-docker-compose.yml}${COMPOSE_SEP}docker/test.override.yml"
+stack_default() { export COMPOSE_PATH_SEPARATOR="$COMPOSE_SEP" COMPOSE_FILE="$TEST_COMPOSE"; }
+# True while a per-run override is in COMPOSE_FILE.
+stack_overridden() { [[ ${COMPOSE_FILE:-} == *stack-override.yml* ]]; }

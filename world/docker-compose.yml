@@ -187,8 +187,8 @@ services:
     build: ../auth
     environment:
       PORT: 3000
-      # TEST ONLY: bots send a unique X-Forwarded-For each so auth's per-IP rate limits apply per bot.
-      TRUST_PROXY: "true"
+      # No TRUST_PROXY: auth keys rate limits and lockouts on the connecting address. The bot harness turns it on
+      # in docker/test.override.yml only.
       APP_BASE_URL: http://localhost:${AUTH_HOST_PORT:-3100}
       DB_HOST: mysql
       DB_PORT: 3306
