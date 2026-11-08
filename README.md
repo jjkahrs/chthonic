@@ -50,6 +50,12 @@ docker compose logs world         # "migration applied", "listening", "chat link
 docker compose logs chat          # "listening", "world link up"
 ```
 
+**Published ports.** MySQL and Mailpit are published on `127.0.0.1` only, in both stacks. Auth is published on
+`127.0.0.1` by default too; set `AUTH_BIND=0.0.0.0` in `.env` to reach it from other machines (game clients on the
+LAN), and only after changing every `change-me` secret. The world (7777) and chat (7778) game ports stay public.
+Auth refuses to start while `SEED_ADMIN_PASSWORD` is still the `change-me` placeholder from `.env.example`: set a
+real password (10-128 characters) or leave both seed variables empty.
+
 The compose project is `chthonic-world`, its images `chthonic-world:dev`, `chthonic-chat:dev` and
 `chthonic-admin:dev`, and its databases `chthonic_auth`, `chthonic_world`, `chthonic_chat` and `chthonic_admin`.
 

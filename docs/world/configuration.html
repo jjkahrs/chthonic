@@ -377,7 +377,12 @@
 <tr>
 <td><code>WORLD_HOST_PORT</code> / <code>AUTH_HOST_PORT</code> / <code>MYSQL_HOST_PORT</code> / <code>MAILPIT_HOST_PORT</code> / <code>CHAT_HOST_PORT</code></td>
 <td><code>7777</code> / <code>3100</code> / <code>3307</code> / <code>8026</code> / <code>7778</code></td>
-<td><code>CHAT_HOST_PORT</code> is also what the world announces (<code>CHAT_PUBLIC_PORT</code>) in the compose stack</td>
+<td><code>CHAT_HOST_PORT</code> is also what the world announces (<code>CHAT_PUBLIC_PORT</code>) in the compose stack. MySQL and Mailpit are published on <code>127.0.0.1</code> only; auth on <code>AUTH_BIND</code></td>
+</tr>
+<tr>
+<td><code>AUTH_BIND</code></td>
+<td><code>127.0.0.1</code></td>
+<td>Host interface auth is published on. <code>0.0.0.0</code> exposes auth to the network (needed for game clients on other machines); set it only once every <code>change-me</code> secret is replaced</td>
 </tr>
 <tr>
 <td><code>CHAT_DB_PASSWORD</code></td>
@@ -397,7 +402,7 @@
 <tr>
 <td><code>SEED_ADMIN_EMAIL</code> / <code>SEED_ADMIN_PASSWORD</code></td>
 <td>empty</td>
-<td>Auth creates this pre-verified admin on start if the email is unused (both or neither)</td>
+<td>Auth creates this pre-verified admin on start if the email is unused (both or neither). Auth refuses to start while the password starts with <code>change-me</code> (the <code>.env.example</code> placeholder)</td>
 </tr>
 </tbody>
 </table>

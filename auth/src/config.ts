@@ -40,6 +40,10 @@ const schema = z
     SEED_ADMIN_EMAIL: optional.pipe(z.email().optional()),
     SEED_ADMIN_PASSWORD: optional.pipe(z.string().min(10).max(128).optional()),
   })
+  .refine((c) => !c.SEED_ADMIN_PASSWORD?.trim().toLowerCase().startsWith('change-me'), {
+    message: 'is the .env.example placeholder; set a real password',
+    path: ['SEED_ADMIN_PASSWORD'],
+  })
   .refine((c) => (c.SEED_ADMIN_EMAIL === undefined) === (c.SEED_ADMIN_PASSWORD === undefined), {
     message: 'SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD must be set together',
     path: ['SEED_ADMIN_PASSWORD'],

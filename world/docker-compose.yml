@@ -206,7 +206,7 @@ services:
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL-}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD-}
     ports:
-      - "${AUTH_HOST_PORT:-3100}:3000"
+      - "${AUTH_BIND:-127.0.0.1}:${AUTH_HOST_PORT:-3100}:3000"
     volumes:
       - auth-keys:/app/keys
     depends_on:
@@ -230,7 +230,7 @@ services:
       WORLD_DB_USER: ${DB_USER:?set DB_USER in .env}
       WORLD_DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
     ports:
-      - "${MYSQL_HOST_PORT:-3307}:3306"
+      - "127.0.0.1:${MYSQL_HOST_PORT:-3307}:3306"
     volumes:
       - mysql-data:/var/lib/mysql
       - ./docker/mysql-init.sh:/docker-entrypoint-initdb.d/10-world.sh:ro
@@ -246,7 +246,7 @@ services:
   mailpit:
     image: axllent/mailpit:v1.31.6
     ports:
-      - "${MAILPIT_HOST_PORT:-8026}:8025"
+      - "127.0.0.1:${MAILPIT_HOST_PORT:-8026}:8025"
     restart: unless-stopped
 
   # Test client, run on demand: docker compose run --rm bot --scenario auth

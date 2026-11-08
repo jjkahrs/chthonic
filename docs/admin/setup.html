@@ -19,7 +19,7 @@ cp .env.example .env        # first time; otherwise add the admin variables from
 docker compose up -d --build
 curl -s localhost:3200/health   # {&quot;status&quot;:&quot;ok&quot;,&quot;db&quot;:&quot;ok&quot;}
 </code></pre>
-<p>Open <a href="http://localhost:3200">http://localhost:3200</a> and sign in with <code>SEED_ADMIN_EMAIL</code> / <code>SEED_ADMIN_PASSWORD</code> (auth creates that admin, pre-verified, on start). Create GM accounts on the Accounts page.</p>
+<p>Open <a href="http://localhost:3200">http://localhost:3200</a> and sign in with <code>SEED_ADMIN_EMAIL</code> / <code>SEED_ADMIN_PASSWORD</code> (auth creates that admin, pre-verified, on start). Auth refuses to start while <code>SEED_ADMIN_PASSWORD</code> is still the <code>change-me</code> placeholder. Create GM accounts on the Accounts page.</p>
 <table>
 <thead>
 <tr><th>Service</th><th>Port</th><th>Notes</th></tr>

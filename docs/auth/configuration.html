@@ -130,7 +130,17 @@
 <tr>
 <td><code>SEED_ADMIN_EMAIL</code> / <code>SEED_ADMIN_PASSWORD</code></td>
 <td>empty</td>
-<td>First admin, created pre-verified on startup if no account has that email. Set both or neither. An existing account with that email is never changed</td>
+<td>First admin, created pre-verified on startup if no account has that email. Set both or neither. An existing account with that email is never changed. A password starting with <code>change-me</code> (the <code>.env.example</code> placeholder, any case) fails the config check, so the service does not start</td>
+</tr>
+<tr>
+<td><code>AUTH_BIND</code> / <code>AUTH_HOST_PORT</code></td>
+<td><code>127.0.0.1</code> / <code>3000</code></td>
+<td>Compose only: the host interface and port the <code>auth</code> container is published on. <code>0.0.0.0</code> exposes auth to the network (needed for game clients on other machines); set it only once every <code>change-me</code> secret is replaced</td>
+</tr>
+<tr>
+<td><code>MAILPIT_UI_PORT</code> / <code>MAILPIT_SMTP_PORT</code></td>
+<td><code>8025</code> / <code>1025</code></td>
+<td>Compose only: host ports of Mailpit's UI/API and SMTP, always on <code>127.0.0.1</code>. <code>MYSQL_PORT</code> is likewise published on <code>127.0.0.1</code> only</td>
 </tr>
 </tbody>
 </table>

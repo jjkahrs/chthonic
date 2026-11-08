@@ -28,18 +28,18 @@ curl -s localhost:3000/health   # {&quot;status&quot;:&quot;ok&quot;,&quot;db&qu
 <tbody>
 <tr>
 <td><code>auth</code></td>
-<td>3000</td>
-<td>Runs migrations, creates or loads the signing key and seeds the admin on start</td>
+<td><code>${AUTH_BIND:-127.0.0.1}:${AUTH_HOST_PORT:-3000}</code></td>
+<td>Runs migrations, creates or loads the signing key and seeds the admin on start. Loopback only by default; <code>AUTH_BIND=0.0.0.0</code> exposes it to the network. Refuses to start while <code>SEED_ADMIN_PASSWORD</code> is a <code>change-me</code> placeholder</td>
 </tr>
 <tr>
 <td><code>mysql</code></td>
-<td><code>${MYSQL_PORT:-3306}</code></td>
+<td><code>127.0.0.1:${MYSQL_PORT:-3306}</code></td>
 <td>MySQL 8.4, volume <code>mysql-data</code>. First start also creates <code>chthonic_auth_test</code></td>
 </tr>
 <tr>
 <td><code>mailpit</code></td>
-<td>8025 (UI/API), 1025 (SMTP)</td>
-<td>Every email the service sends shows up at http://localhost:8025</td>
+<td><code>127.0.0.1:${MAILPIT_UI_PORT:-8025}</code> (UI/API), <code>127.0.0.1:${MAILPIT_SMTP_PORT:-1025}</code> (SMTP)</td>
+<td>Every email the service sends shows up at http://localhost:8025. No authentication, so it is never published beyond loopback</td>
 </tr>
 </tbody>
 </table>
