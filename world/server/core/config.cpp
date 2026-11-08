@@ -16,6 +16,7 @@ ConfigResult load_config(const EnvLookup& env) {
     l.str("WORLD_HOST", c.host);
     l.num("WORLD_PORT", c.port, 1, 65535);
     l.num("MAX_CONNECTIONS", c.maxConnections, 1, 1000000);
+    l.num("MAX_PREAUTH_PER_IP", c.maxPreauthPerIp, 0, 1000000);
     l.num("MAX_FRAME_BYTES", c.maxFrameBytes, 64, 65535);
     l.num("HANDSHAKE_TIMEOUT_MS", c.handshakeTimeoutMs, 100, u32max);
     l.num("IDLE_TIMEOUT_MS", c.idleTimeoutMs, 1000, u32max);

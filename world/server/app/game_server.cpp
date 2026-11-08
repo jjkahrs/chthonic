@@ -120,6 +120,8 @@ void GameServer::accept() {
         if (shuttingDown_ || !acceptor_.is_open()) return;
         if (!ec) {
             socket.set_option(asio::ip::tcp::no_delay(true), ec);
+            const auto peer = socket.remote_endpoint(ec);
+            std::string ip = ec ? std::string("unknown") : peer.address().to_string();
             const uint32_t id = nextSessionId_++;
             // Both run on the session's net thread and post here, in order: its messages, then its close.
             auto session = std::make_shared<net::Session>(
@@ -128,11 +130,12 @@ void GameServer::accept() {
                     asio::post(io_, [this, sid = s.id(), m = std::move(m)]() mutable { on_message(sid, std::move(m)); });
                 },
                 [this](net::Session& s) { asio::post(io_, [this, sid = s.id()] { on_closed(sid); }); });
-            if (clients_.size() >= cfg_.maxConnections) {
+            if (clients_.size() >= cfg_.maxConnections || !preauth_.try_add(ip, cfg_.maxPreauthPerIp)) {
                 session->start(proto::Code::server_full);
             } else {
                 clients_[id].session = session;
                 clients_[id].connectedAt = std::chrono::system_clock::now();
+                clients_[id].preauthIp = std::move(ip);
                 session->start();
             }
         }
@@ -143,6 +146,12 @@ void GameServer::accept() {
 GameServer::Client* GameServer::find(uint32_t sessionId) {
     auto it = clients_.find(sessionId);
     return it == clients_.end() ? nullptr : &it->second;
+}
+
+void GameServer::release_preauth(Client& c) {
+    if (c.preauthIp.empty()) return;
+    preauth_.release(c.preauthIp);
+    c.preauthIp.clear();
 }
 
 void GameServer::disconnect(Client& c, proto::Code reason) {
@@ -202,6 +211,7 @@ void GameServer::auth_done(uint32_t sid, const TokenResult& r) {
     c->accountId = r.accountId;
     c->role = r.role;
     c->phase = Phase::lobby;
+    release_preauth(*c);
     c->session->authenticated();
     c->session->send(proto::AuthOk{r.accountId, r.role});
     log::info("authenticated", {{"session", sid}, {"account", r.accountId}, {"role", role_name(r.role)}});
@@ -398,6 +408,7 @@ void GameServer::on_closed(uint32_t sid) {
     if (it == clients_.end()) return;
     Client& c = it->second;
     leave_world(c);
+    release_preauth(c);
     if (auto o = online_.find(c.accountId); o != online_.end() && o->second == sid) online_.erase(o);
     clients_.erase(it);
     if (shuttingDown_ && clients_.empty() && onShutdownDone_) {

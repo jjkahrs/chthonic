@@ -16,6 +16,7 @@ struct Config {
     std::string host = "0.0.0.0";
     uint16_t port = 7777;
     uint32_t maxConnections = 1000;
+    uint32_t maxPreauthPerIp = 8; // 0: off
     uint32_t maxFrameBytes = 4096;
     uint32_t handshakeTimeoutMs = 10000;
     uint32_t idleTimeoutMs = 60000;

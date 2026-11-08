@@ -10,6 +10,7 @@
 #include "../core/tick_stats.h"
 #include "../db/db_worker.h"
 #include "../net/net_threads.h"
+#include "../net/preauth_limit.h"
 #include "../net/session.h"
 #include "../world/world.h"
 #include "admin_port.h"
@@ -51,6 +52,7 @@ private:
         uint16_t reportedMap = 0; // the map the chat link last heard of
         bool leaving = false;     // disconnect asked for: its on_closed follows, nothing more is handled
         SysTime connectedAt{};
+        std::string preauthIp; // counted in preauth_ until AuthOk; empty once released
     };
 
     void accept();
@@ -58,6 +60,7 @@ private:
     void on_closed(uint32_t sessionId);
     Client* find(uint32_t sessionId);
     void disconnect(Client& c, proto::Code reason);
+    void release_preauth(Client& c); // authenticated or closed: no longer counts against MAX_PREAUTH_PER_IP
 
     void handle_hello(Client& c, const proto::Hello& m);
     void handle_auth(Client& c, const proto::Auth& m);
@@ -95,6 +98,7 @@ private:
     uint32_t nextSessionId_ = 1;
     std::unordered_map<uint32_t, Client> clients_;
     std::unordered_map<uint64_t, uint32_t> online_; // accountId -> session id
+    net::PreauthLimit preauth_;                     // MAX_PREAUTH_PER_IP over clients_
     std::vector<net::Session*> fanOut_;             // the SendMany recipient buffer, kept for its capacity
 
     asio::steady_timer tickTimer_;

@@ -11,6 +11,7 @@
 #include "core/utc.h"
 #include "db/db_worker.h"
 #include "net/net_threads.h"
+#include "net/preauth_limit.h"
 #include "net/session.h"
 #include "net/tls_context.h"
 #include "world/aoi_grid.h"
@@ -815,6 +816,22 @@ void checkMessageRate() {
     check(!anyBad, "50 msg/s always accepted");
 }
 
+// MAX_PREAUTH_PER_IP (the accept path's per-address count; the servers release on AuthOk or close).
+void checkPreauthLimit() {
+    net::PreauthLimit p;
+    int admitted = 0;
+    for (int i = 0; i < 9; ++i) admitted += p.try_add("10.0.0.1", 8);
+    check(admitted == 8 && p.count("10.0.0.1") == 8, "cap 8: the 9th pre-auth socket from one address is refused");
+    check(p.try_add("10.0.0.2", 8), "another address is unaffected");
+    p.release("10.0.0.1"); // one authenticated (or closed)
+    check(p.try_add("10.0.0.1", 8) && !p.try_add("10.0.0.1", 8), "after one authenticates or closes, one more is allowed");
+    for (int i = 0; i < 9; ++i) p.release("10.0.0.1");
+    check(p.count("10.0.0.1") == 0 && p.try_add("10.0.0.1", 8), "released to zero (extra releases ignored)");
+    bool all = true;
+    for (int i = 0; i < 100; ++i) all = all && p.try_add("10.0.0.3", 0);
+    check(all && p.count("10.0.0.3") == 0, "cap 0: no limit, nothing counted");
+}
+
 void checkConfig() {
     std::map<std::string, std::string> env = {{"AUTH_JWKS_URL", "http://auth:3000/.well-known/jwks.json"},
                                               {"DB_HOST", "mysql"}, {"DB_USER", "u"}, {"DB_PASSWORD", "p"},
@@ -826,6 +843,12 @@ void checkConfig() {
     auto ok = load_config(lookup);
     check(ok.errors.empty(), "minimal config valid");
     check(ok.config.mapRoot == "/app/maps" && ok.config.startMap == 1 && ok.config.port == 7777, "defaults applied");
+    check(ok.config.maxPreauthPerIp == 8, "MAX_PREAUTH_PER_IP defaults to 8");
+    env["MAX_PREAUTH_PER_IP"] = "0";
+    check(load_config(lookup).errors.empty() && load_config(lookup).config.maxPreauthPerIp == 0, "MAX_PREAUTH_PER_IP=0 (off) accepted");
+    env["MAX_PREAUTH_PER_IP"] = "-1";
+    check(load_config(lookup).errors.size() == 1, "MAX_PREAUTH_PER_IP=-1 refused");
+    env.erase("MAX_PREAUTH_PER_IP");
     for (const char* bad : {"48", "100", "0.5"}) {
         env["AOI_CELL_SIZE"] = bad;
         const auto r = load_config(lookup);
@@ -2186,6 +2209,7 @@ int main(int argc, char** argv) {
     checkClientEvents();
     checkMessageRate();
     checkConfig();
+    checkPreauthLimit();
     checkSaveQueue();
     checkLagSim();
     checkSendMany();

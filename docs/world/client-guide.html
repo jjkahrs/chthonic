@@ -552,7 +552,7 @@ none.</p>
 <tr><td>10</td><td><code>service_unavailable</code></td><td>The server cannot fetch auth's JWKS</td><td>Retry with backoff; tell the player the login service is down</td></tr>
 <tr><td>11</td><td><code>logged_in_elsewhere</code></td><td>The account logged in on another connection (world), or opened another chat connection (chat)</td><td>Show it; do not reconnect automatically (the two clients would kick each other forever)</td></tr>
 <tr><td>12</td><td><code>server_shutdown</code></td><td>Graceful shutdown</td><td>Show it; offer to reconnect later (backoff)</td></tr>
-<tr><td>13</td><td><code>server_full</code></td><td>Over <code>MAX_CONNECTIONS</code> (sent right after TLS)</td><td>Retry later with backoff</td></tr>
+<tr><td>13</td><td><code>server_full</code></td><td>Over <code>MAX_CONNECTIONS</code>, or too many unauthenticated connections from your address (<code>MAX_PREAUTH_PER_IP</code>); sent right after TLS</td><td>Retry later with backoff</td></tr>
 <tr><td>14</td><td><code>unexpected_message</code></td><td>A valid message in the wrong state (<a href="#states">table</a>)</td><td>Client bug: fix the state machine</td></tr>
 <tr><td>26</td><td><code>no_character</code></td><td>Chat service only: the account has no character in a world (after <code>CHAT_BIND_TIMEOUT_MS</code>), it left, or its world's link dropped</td><td>While still in the world, reconnect chat with backoff; else wait for the next <code>ChatServer</code></td></tr>
 <tr><td>27</td><td><code>kicked</code></td><td>An admin kicked the session (the character was saved first)</td><td>Show it; do not reconnect automatically</td></tr>

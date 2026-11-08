@@ -26,7 +26,7 @@ std::vector<uint32_t> ChatRouter::char_online(uint32_t link, const proto::CharOn
         if (auto s = remove(it->second); s && *s) orphans.push_back(*s);
     if (auto it = byAccount_.find(c.accountId); it != byAccount_.end())
         if (auto s = remove(it->second); s && *s) orphans.push_back(*s);
-    chars_.emplace(c.charId, Character{c.charId, c.accountId, c.name, c.map, link, 0, proto::Role::player, {}, {},
+    chars_.emplace(c.charId, Character{c.charId, c.accountId, c.name, c.map, link, 0, std::nullopt, {}, {},
                                        WindowLimiter(rules_.rateCount, rules_.rateWindow)});
     byName_[name_key(c.name)] = c.charId;
     byAccount_[c.accountId] = c.charId;
@@ -194,8 +194,17 @@ void ChatRouter::mute(Character& gm, const proto::ChatMute& m, SysTime wallNow) 
         log::info("mute refused: not a GM", {{"char", gm.charId}, {"account", gm.accountId}});
         return notice(gm, ChatNoticeCode::not_allowed, m.name);
     }
+    if (mutes_.minutes_left(gm.name, wallNow)) { // a muted GM can't lift its own mute (or anyone's)
+        log::info("mute refused: caller is muted", {{"char", gm.charId}, {"account", gm.accountId}});
+        return notice(gm, ChatNoticeCode::not_allowed, m.name);
+    }
     if (!valid_character_name(m.name)) return notice(gm, ChatNoticeCode::bad_name, m.name);
     const Character* target = by_name(m.name);
+    // A GM only mutes players it can see: a staff, offline or not yet bound (role unknown) target needs an admin.
+    if (gm.role != proto::Role::admin && !(target && target->role == proto::Role::player)) {
+        log::info("mute refused: target not a known player", {{"char", gm.charId}, {"account", gm.accountId}, {"name", m.name}});
+        return notice(gm, ChatNoticeCode::not_allowed, m.name);
+    }
     const std::string name = target ? target->name : m.name;
     if (m.minutes == 0) {
         mutes_.erase(name);
